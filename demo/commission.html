@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nova Public Service Commission</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.5 Georgia, "Times New Roman", serif; background: #f5f3ee; color: #1f2937; }
+    header { background: #7c2d12; color: #fff; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+    header .seal { width: 44px; height: 44px; border-radius: 50%; background: #fbbf24; color: #7c2d12; display: grid; place-items: center; font-weight: 700; }
+    header h1 { margin: 0; font-size: 20px; }
+    nav { background: #9a3412; display: flex; flex-wrap: wrap; }
+    nav a { color: #fff; text-decoration: none; padding: 10px 14px; font: 600 14px system-ui, sans-serif; }
+    nav a:hover, nav a.on { background: #7c2d12; }
+    main { max-width: 900px; margin: 20px auto; padding: 0 16px; }
+    .box { background: #fff; border: 1px solid #e7e2d6; border-radius: 6px; padding: 16px 20px; margin-bottom: 16px; }
+    h2 { margin-top: 0; color: #7c2d12; font-size: 19px; }
+    table { width: 100%; border-collapse: collapse; font: 14px system-ui, sans-serif; }
+    th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+    th { background: #fdf6ec; }
+    .tag { font-size: 11px; background: #fee2e2; color: #b91c1c; padding: 1px 6px; border-radius: 4px; }
+    .marquee { background: #fffbeb; border: 1px solid #fde68a; padding: 8px 12px; font: 14px system-ui, sans-serif; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header><div class="seal">NPSC</div><h1>Nova Public Service Commission <small style="font-weight:400;opacity:.8">(demo site)</small></h1></header>
+  <nav>
+    <a href="#home" data-page="home" class="on">Home</a>
+    <a href="#exams" data-page="exams">Examinations</a>
+    <a href="#recruitment" data-page="recruitment">Recruitment</a>
+    <a href="#contact" data-page="contact">Contact Us</a>
+  </nav>
+  <main>
+    <section data-view="home">
+      <div class="marquee">📢 What's New: Results of Engineering Services (Main) 2025 declared · Interview schedule for Assistant Commandant posted</div>
+      <div class="box"><h2>Welcome</h2><p>The Commission conducts examinations for recruitment to the services of the Union. Visit <b>Examinations</b> for notifications, admit cards and results.</p></div>
+    </section>
+
+    <section data-view="exams" hidden>
+      <div class="box">
+        <h2>Examinations</h2>
+        <p style="font-family:system-ui">
+          <a href="#active" data-page="active">Active Examinations</a> ·
+          <a href="#forthcoming" data-page="forthcoming">Forthcoming Examinations</a> ·
+          <a href="#archives" data-page="archives">Archives</a>
+        </p>
+      </div>
+    </section>
+
+    <section data-view="active" hidden>
+      <div class="box">
+        <h2>Active Examinations</h2>
+        <table>
+          <tr><th>Examination</th><th>Documents</th><th>Last date</th></tr>
+          <tr><td>Civil Services (Preliminary) Examination, 2026</td><td><a href="#">Notification (Eng)</a></td><td>18-02-2026</td></tr>
+          <tr><td>Combined Defence Services Examination (I), 2026 <span class="tag">NEW</span></td>
+              <td><a href="files/cde-1-2026-notification.pdf">Notification (Eng)</a> · <a href="#">Apply Online</a></td><td>30-12-2025</td></tr>
+          <tr><td>Engineering Services (Preliminary) Examination, 2026</td><td><a href="#">Notification (Eng)</a></td><td>14-10-2025</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <section data-view="forthcoming" hidden><div class="box"><h2>Forthcoming Examinations</h2><p>No new notifications.</p></div></section>
+    <section data-view="archives" hidden><div class="box"><h2>Archives</h2><p>Older notifications are available on request.</p></div></section>
+    <section data-view="recruitment" hidden><div class="box"><h2>Recruitment</h2><p>No active recruitment advertisements.</p></div></section>
+    <section data-view="contact" hidden><div class="box"><h2>Contact Us</h2><p>Nova Bhawan, Shahjahan Road (demo address).</p></div></section>
+  </main>
+  <script>
+    function show(page) {
+      document.querySelectorAll('[data-view]').forEach((v) => (v.hidden = v.dataset.view !== page));
+      document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('on', a.dataset.page === page || (page === 'active' && a.dataset.page === 'exams')));
+    }
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest('a[data-page]');
+      if (a) { e.preventDefault(); show(a.dataset.page); history.replaceState(null, '', '#' + a.dataset.page); }
+    });
+    show((location.hash || '#home').slice(1));
+  </script>
+</body>
+</html>

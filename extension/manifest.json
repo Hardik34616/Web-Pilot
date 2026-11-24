@@ -3,7 +3,7 @@
   "name": "WebPilot AI",
   "version": "0.1.0",
   "description": "An AI browser agent that turns natural-language instructions into real web actions — while you stay in control.",
-  "permissions": ["sidePanel", "storage", "scripting", "tabs", "activeTab"],
+  "permissions": ["sidePanel", "storage", "scripting", "tabs", "activeTab", "downloads"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
   "side_panel": { "default_path": "sidepanel/sidepanel.html" },

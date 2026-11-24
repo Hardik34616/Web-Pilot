@@ -185,3 +185,15 @@ table.preview td.old { color: var(--muted); word-break: break-word; }
 .badge.achieved { background: #e3f7ec; color: var(--ok); }
 .badge.blocked, .badge.step-limit { background: var(--warn-soft); color: var(--warn); }
 .item .pw { border: 0; background: none; padding: 0 2px; cursor: pointer; font-size: 13px; }
+
+/* task plan checklist */
+.taskplan { align-self: stretch; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: var(--radius); padding: 9px 11px; box-shadow: var(--shadow); }
+.taskplan .tp-head { font-weight: 700; font-size: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; }
+.taskplan .tp-goal { font-weight: 600; margin: 3px 0 6px; }
+.taskplan ol { list-style: none; margin: 0; padding: 0; }
+.taskplan li { display: grid; grid-template-columns: 20px 1fr; gap: 6px; padding: 3px 4px; border-radius: 6px; color: var(--muted); font-size: 12.5px; }
+.taskplan li .ic { text-align: center; font-size: 11px; }
+.taskplan li.done { color: var(--text); }
+.taskplan li.now { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.taskplan .tp-done { margin-top: 6px; font-size: 12px; color: var(--muted); }
+.msg.system.notice { font-style: italic; opacity: .8; }

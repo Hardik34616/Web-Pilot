@@ -34,6 +34,8 @@
           <button class="chip">Fill my details, select CSE as my branch, accept the terms and prepare the form for submission</button>
           <button class="chip">Open YouTube and play the GTA 6 trailer</button>
           <button class="chip">Create an account on this site using my details</button>
+          <button class="chip">Download the NDA 1 2026 notification</button>
+          <button class="chip">Solve this coding problem and submit it</button>
           <button class="chip">Open Unstop and search for hackathons in Pune</button>
         </div>
       </div>
@@ -115,6 +117,8 @@
       <label class="field"><span>AI provider</span>
         <select id="provider">
           <option value="groq">Groq — free, very fast (recommended)</option>
+          <option value="cerebras">Cerebras — free, fastest</option>
+          <option value="sambanova">SambaNova — free, very fast</option>
           <option value="openrouter">OpenRouter — free models</option>
           <option value="gemini">Google Gemini</option>
         </select>
@@ -140,6 +144,7 @@
       </div>
       <p id="testResult" class="hint"></p>
       <p class="hint">If the chosen model is overloaded, WebPilot retries and then switches to another model from the same provider. If every model is busy, it falls back to the offline matcher.</p>
+      <p class="hint"><b>Tip:</b> save free keys for more than one provider (switch the dropdown, paste, Save). If your main provider hits its limit, WebPilot automatically continues with the next one.</p>
     </div>
     <div class="card">
       <h3>🛡️ Privacy &amp; safety</h3>

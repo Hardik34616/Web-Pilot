@@ -128,9 +128,33 @@
   ].join(', ');
   const MAX_ELEMENTS = 260, MAX_LINKS = 140;
 
+  const registry = new Map(); // id → element (also finds elements inside shadow DOM)
   function idOf(el) {
     if (!el.dataset.wpId) el.dataset.wpId = PREFIX + ++seq;
+    registry.set(el.dataset.wpId, el);
     return el.dataset.wpId;
+  }
+  function byWpId(id) {
+    const el = registry.get(id);
+    if (el && el.isConnected) return el;
+    return document.querySelector(`[data-wp-id="${CSS.escape(id || '')}"]`);
+  }
+
+  /** querySelectorAll that also looks inside open shadow roots (web-component sites). */
+  function deepAll(selector) {
+    const out = [...document.querySelectorAll(selector)];
+    const walk = (root) => {
+      const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let n;
+      while ((n = tw.nextNode())) {
+        if (n.shadowRoot) {
+          out.push(...n.shadowRoot.querySelectorAll(selector));
+          walk(n.shadowRoot);
+        }
+      }
+    };
+    walk(document.documentElement);
+    return out;
   }
 
   function inViewport(el) {
@@ -192,7 +216,8 @@
     if (tag === 'a' || role === 'link') {
       const label = labelFor(el);
       if (!label) return null;
-      return { id: idOf(el), kind: 'link', label, href: clean(el.getAttribute('href'), 90) || undefined, ...base };
+      const href = el.href || el.getAttribute('href') || '';
+      return { id: idOf(el), kind: 'link', label, href: clean(href, 120) || undefined, pdf: /\.pdf(\?|#|$)/i.test(href) || undefined, ...base };
     }
     if (tag === 'button' || tag === 'summary' || ['submit', 'button', 'reset', 'image'].includes(type) ||
         ['button', 'tab', 'menuitem', 'option'].includes(role) || (role === 'combobox' && tag !== 'input')) {
@@ -217,13 +242,55 @@
     return null;
   }
 
+  // ---------- code editors ----------
+  const EDITOR_SEL = '.monaco-editor, .cm-editor, .CodeMirror, .ace_editor, [data-code-editor]';
+  const editorType = (el) => (el.matches('.monaco-editor') ? 'monaco' : el.matches('.cm-editor') ? 'codemirror6'
+    : el.matches('.CodeMirror') ? 'codemirror5' : el.matches('.ace_editor') ? 'ace' : 'editor');
+
+  function findEditors() {
+    return deepAll(EDITOR_SEL).filter((e) => isVisible(e) && !(e.parentElement && e.parentElement.closest(EDITOR_SEL)));
+  }
+
+  /** Best-effort code text from the DOM (the side panel refines this through the editor's own API). */
+  function editorText(el) {
+    const t = editorType(el);
+    const lines = (sel) => [...el.querySelectorAll(sel)].map((n) => n.textContent.replace(/ /g, ' ')).join('\n');
+    if (t === 'monaco') return lines('.view-line');
+    if (t === 'codemirror6') return (el.querySelector('.cm-content') || el).innerText;
+    if (t === 'codemirror5') return lines('.CodeMirror-line');
+    if (t === 'ace') return lines('.ace_line');
+    const ta = el.querySelector('textarea');
+    return ta ? ta.value : el.innerText;
+  }
+
+  const RESULT_RE = /(accepted|wrong answer|runtime error|compil(e|ation) error|time limit|memory limit|passed\s*\d+\s*\/\s*\d+|\d+\s*\/\s*\d+\s*(test|passed)|test cases? passed|all test|failing at|failing test|failed test|test( case)? #?\d+|expected output|your output|segmentation fault|exception|traceback|syntax error|success)/i;
+
+  /** Short visible text blocks that look like a judge's verdict / test output. */
+  function resultText(editors) {
+    const blocks = [];
+    for (const n of document.querySelectorAll('div, section, p, span, pre, h1, h2, h3, h4')) {
+      if (blocks.length > 40) break;
+      if (editors.some((ed) => ed.contains(n))) continue;
+      const t = (n.innerText || '').trim();
+      if (t.length < 6 || t.length > 400 || !RESULT_RE.test(t) || !isVisible(n)) continue;
+      blocks.push(t.replace(/\s+/g, ' '));
+    }
+    // keep the most specific blocks (drop ones that contain another kept block)
+    const uniq = [...new Set(blocks)].sort((a, b) => a.length - b.length);
+    const kept = [];
+    for (const b of uniq) if (!kept.some((k) => b.includes(k))) kept.push(b);
+    return kept.join(' | ').slice(0, 900);
+  }
+
   function snapshot() {
     const overlay = overlayRoot();
+    const editors = findEditors();
     const items = [];
     const seenGroups = new Set();
-    for (const el of document.querySelectorAll(SELECTOR)) {
+    for (const el of deepAll(SELECTOR)) {
       if (el.disabled) continue;
       if (el.closest('#__webpilot_overlay')) continue;
+      if (editors.length && editors.some((ed) => ed.contains(el))) continue; // the editor is listed as one element
       const isMedia = el.tagName === 'VIDEO' || el.tagName === 'AUDIO';
       if (!isMedia && !isUsable(el)) continue;
       if (isMedia && !isVisible(el) && !(el.currentTime > 0)) continue;
@@ -245,7 +312,11 @@
       if (items.length > 1500) break;
     }
     // Priority: popup first, then what's on screen, then the rest of the page.
-    const rank = (e) => (e.popup ? 0 : e.offscreen ? 2 : 1);
+    for (const ed of editors) {
+      const code = editorText(ed);
+      items.unshift({ id: idOf(ed), kind: 'code-editor', label: `Code editor (${editorType(ed)})`, editorType: editorType(ed), value: code.slice(0, 6000), lines: code.split('\n').length });
+    }
+    const rank = (e) => (e.kind === 'code-editor' ? -1 : e.popup ? 0 : e.offscreen ? 2 : 1);
     const ordered = items.map((e, i) => [e, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map((x) => x[0]);
     const out = [];
     let links = 0;
@@ -263,10 +334,13 @@
     return {
       url: location.href,
       title: document.title,
+      isPdf: document.contentType === 'application/pdf',
       headings,
       popupText: overlay ? clean(overlay.innerText, 400) : '',
       errors: [...new Set(errors)].slice(0, 6),
-      text: clean(main ? main.innerText : '', 1500),
+      // coding pages need the whole problem statement
+      text: clean(main ? main.innerText : '', editors.length ? 4000 : 1500),
+      results: editors.length ? resultText(editors) : '',
       scroll: { atTop: scrollY < 50, atBottom: innerHeight + scrollY >= document.documentElement.scrollHeight - 50 },
       elements: out,
     };
@@ -399,8 +473,8 @@
     // page-level actions (no target element)
     if (action.type === 'scroll') {
       const dy = (action.direction === 'up' ? -1 : 1) * Math.round(innerHeight * 0.85);
-      scrollBy({ top: dy, behavior: 'smooth' });
-      await sleep(700);
+      scrollBy({ top: dy, behavior: 'instant' });
+      await sleep(400);
       return { detail: `scrolled ${action.direction === 'up' ? 'up' : 'down'}` };
     }
     if (action.type === 'press' && !action.target) {
@@ -413,11 +487,11 @@
       action = { ...action, target: idOf(m) };
     }
 
-    const el = document.querySelector(`[data-wp-id="${CSS.escape(action.target || '')}"]`);
+    const el = byWpId(action.target);
     if (!el) throw new Error('That element is no longer on the page (the page may have changed).');
     if (el.disabled) throw new Error('That element is disabled.');
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    await sleep(220);
+    el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    await sleep(60);
 
     const label = el.type === 'radio' ? radioGroupLabel(radiosOf(el)) : labelFor(el);
     let type = action.type;
@@ -472,14 +546,14 @@
       }
       case 'click': {
         highlight(el, `Clicking “${clean(label, 40)}”`);
-        await sleep(300);
+        await sleep(120);
         realClick(el);
         return { detail: `clicked “${clean(label, 40)}”` };
       }
       case 'press': {
         const key = action.key || 'Enter';
         highlight(el, `Pressing ${key}`);
-        await sleep(200);
+        await sleep(60);
         await pressKey(el, key);
         return { detail: `pressed ${key}` };
       }
@@ -506,6 +580,12 @@
       try {
         if (msg.cmd === 'ping') return sendResponse({ ok: true });
         if (msg.cmd === 'snapshot') return sendResponse({ ok: true, data: snapshot() });
+        if (msg.cmd === 'href') {
+          // absolute URL behind a link / button, used for downloads
+          const el = byWpId(msg.target);
+          const a = el && (el.closest('a[href]') || (el.querySelector && el.querySelector('a[href]')));
+          return sendResponse({ ok: true, data: a ? a.href : (el && (el.getAttribute('data-href') || el.getAttribute('data-url'))) || '' });
+        }
         if (msg.cmd === 'execute') return sendResponse({ ok: true, data: await execute(msg.action, msg.value, msg.opts) });
         sendResponse({ ok: false, error: 'Unknown command' });
       } catch (e) {

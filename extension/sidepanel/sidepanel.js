@@ -1,7 +1,7 @@
 // WebPilot AI — side panel controller and agent loop.
 
 import { PROFILE_FIELDS, FIELD_KEYS, effectiveProfile, IMPORT_PROMPT, parseImport } from './profile.js';
-import { planWithAI, planHeuristic, testAI, isPageChanging, GENERATED_PASSWORD_KEY } from './planner.js';
+import { planWithAI, planHeuristic, fallbackPlan, testAI, makeTaskPlan, isPageChanging, GENERATED_PASSWORD_KEY } from './planner.js';
 import { PROVIDERS, providerOf, activeKey, activeModel } from './providers.js';
 import { classify, needsApproval } from './safety.js';
 import { store } from './storage.js';
@@ -129,7 +129,7 @@ function askApproval({ action, el, value, risk, mode }) {
     card.innerHTML = `
       <div class="ttl">${risk.level === 'sensitive' ? '⚠️ Approval needed' : '✋ Review this step'}</div>
       <div>${esc(action.description)}</div>
-      ${showVal ? `<div style="margin-top:4px">Value: <span class="val">${esc(value)}</span></div>` : ''}
+      ${showVal ? `<div style="margin-top:4px">Value: <span class="val" style="white-space:pre-wrap">${esc(String(value).slice(0, 400))}${String(value).length > 400 ? '…' : ''}</span></div>` : ''}
       <div class="meta">${esc(el?.label ? `Element: “${el.label}”` : '')}${risk.reason ? ' · ' + esc(risk.reason) : ''}</div>
       <div class="btns">
         <button class="ok" data-d="approve">Approve</button>
@@ -163,7 +163,7 @@ const SUMMARY_TITLES = {
   error: '❌ Something went wrong',
 };
 
-function addSummary({ status, counts, missing, note }) {
+function addSummary({ status, counts, missing, note, downloads = [] }) {
   const d = document.createElement('div');
   const cls = ['achieved', 'completed'].includes(status) ? '' : status === 'error' ? 'bad' : 'warn';
   d.className = 'summary ' + cls;
@@ -171,7 +171,9 @@ function addSummary({ status, counts, missing, note }) {
   if (missing.length) body += `${body ? '\n' : ''}I had no data for: ${missing.join(', ')}. Add it to your Profile, or tell me in the task.`;
   d.innerHTML = `<h4>${SUMMARY_TITLES[status] || status}</h4>
     <div class="stats"><span>✅ ${counts.done} done</span><span>⏭️ ${counts.skipped} skipped</span><span>❌ ${counts.failed} failed</span></div>
-    <div style="white-space:pre-wrap">${esc(body)}</div>`;
+    <div style="white-space:pre-wrap">${esc(body)}</div>
+    ${downloads.length ? '<div class="row"><button class="small" data-show>📂 Show in folder</button></div>' : ''}`;
+  d.querySelector('[data-show]')?.addEventListener('click', () => chrome.downloads.show(downloads[downloads.length - 1].id));
   logEl().appendChild(d);
   scrollLog();
 }
@@ -255,15 +257,130 @@ async function send(tabId, msg) {
   return r.data;
 }
 
+// ---------- code editors (Monaco / CodeMirror / Ace) ----------
+// These two functions are injected into the PAGE's own JavaScript world, where the editor objects live.
+// They must be self-contained (no outer variables).
+function pageEditor(op, id, code) {
+  // Runs inside the page. Must be self-contained.
+  const EDITORS = '.monaco-editor, .cm-editor, .CodeMirror, .ace_editor, [data-code-editor]';
+
+  // Monaco: global namespace, AMD module, or an instance held in React state (e.g. @monaco-editor/react).
+  function monacoNs() {
+    if (window.monaco?.editor) return window.monaco;
+    // Monaco's AMD loader returns an already-loaded module synchronously (it throws if it isn't loaded).
+    for (const mod of ['vs/editor/editor.main', 'vs/editor/editor.api']) {
+      try { const m = typeof window.require === 'function' && window.require(mod); if (m?.editor) return m; } catch (e) {}
+    }
+    return null;
+  }
+  function monacoFromReact(el) {
+    const seen = new Set();
+    const isEditor = (v) => v && typeof v === 'object' && typeof v.getModel === 'function' && typeof v.executeEdits === 'function';
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      const key = Object.keys(n).find((k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+      if (!key) continue;
+      for (let f = n[key], i = 0; f && i < 60; i++, f = f.return) {
+        for (let h = f.memoizedState, j = 0; h && typeof h === 'object' && j < 60; j++, h = h.next) {
+          for (const v of [h.memoizedState, h.memoizedState?.current]) {
+            if (v && typeof v === 'object' && !seen.has(v)) { seen.add(v); if (isEditor(v)) return v; }
+          }
+        }
+        for (const v of [f.stateNode, f.memoizedProps?.editor, f.memoizedProps?.editorRef?.current]) if (isEditor(v)) return v;
+      }
+      break;
+    }
+    return null;
+  }
+  function monacoEditor(el) {
+    const ns = monacoNs();
+    const fromNs = ns ? (ns.editor.getEditors?.() || []).find((e) => el.contains(e.getDomNode())) : null;
+    return fromNs || monacoFromReact(el);
+  }
+
+  function api(el) {
+    if (el.matches('.monaco-editor')) {
+      const ed = monacoEditor(el);
+      if (ed) return { how: 'monaco', get: () => ed.getValue(), set: (c) => { ed.focus(); ed.executeEdits('webpilot', [{ range: ed.getModel().getFullModelRange(), text: c, forceMoveMarkers: true }]); ed.pushUndoStop?.(); } };
+    }
+    if (el.matches('.cm-editor')) {
+      const view = el.querySelector('.cm-content')?.cmView?.view;
+      if (view) return { how: 'codemirror6', get: () => view.state.doc.toString(), set: (c) => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: c } }) };
+    }
+    if (el.matches('.CodeMirror') && el.CodeMirror) return { how: 'codemirror5', get: () => el.CodeMirror.getValue(), set: (c) => el.CodeMirror.setValue(c) };
+    if (el.matches('.ace_editor') && window.ace) { const ed = window.ace.edit(el); return { how: 'ace', get: () => ed.getValue(), set: (c) => ed.setValue(c, 1) }; }
+    const ta = el.matches('textarea') ? el : el.querySelector('textarea');
+    if (ta && !el.matches('.monaco-editor')) return { how: 'textarea', get: () => ta.value, set: (c) => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, c); ta.dispatchEvent(new Event('input', { bubbles: true })); } };
+    return null;
+  }
+
+  if (op === 'get') {
+    const out = {};
+    for (const el of document.querySelectorAll('[data-wp-id]')) {
+      if (!el.matches(EDITORS)) continue;
+      try { const e = api(el); if (e) out[el.dataset.wpId] = e.get(); } catch (e) {}
+    }
+    return out;
+  }
+
+  const el = document.querySelector('[data-wp-id="' + id + '"]');
+  if (!el) return { ok: false, how: 'editor not found' };
+  try {
+    const e = api(el);
+    if (e) { e.set(code); return { ok: true, how: e.how }; }
+  } catch (err) { /* fall through */ }
+  // Last resort: paste into the editor (works when the page has focus).
+  const input = el.querySelector('textarea, [contenteditable="true"], .cm-content') || el;
+  input.focus();
+  document.execCommand('selectAll');
+  const dt = new DataTransfer();
+  dt.setData('text/plain', code);
+  const notHandled = input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  if (notHandled) document.execCommand('insertText', false, code);
+  return { ok: true, how: 'paste' };
+}
+
+const pageGetCode = () => pageEditor('get');
+
+const normCode = (c) => String(c || '').replace(/\s+/g, '');
+
+/** Replace the editor's code and confirm it actually landed. */
+async function writeCode(tabId, editorId, code) {
+  const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageEditor, args: ['set', editorId, code] });
+  if (!result?.ok) throw new Error(`Couldn't write into the code editor (${result?.how || 'no editor'}).`);
+  await sleep(250);
+  const [{ result: now } = {}] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageEditor, args: ['get'] });
+  let landed = now?.[editorId];
+  if (landed == null) { // no API access — read the DOM text instead
+    const snap = await send(tabId, { cmd: 'snapshot' });
+    landed = snap.elements.find((e) => e.id === editorId)?.value;
+  }
+  const want = normCode(code), got = normCode(landed);
+  if (landed != null && !(got === want || got.includes(want.slice(0, 60)))) {
+    throw new Error(result.how === 'paste'
+      ? "This site's code editor doesn't expose an API and ignored pasted input while the page isn't focused. Click into the editor once, then let me continue."
+      : 'The code did not land in the editor correctly. Try again.');
+  }
+  return { detail: `wrote ${code.split('\n').length} lines of code (${result.how})` };
+}
+
 /** Snapshot of the tab, or a stand-in description when the page can't be scripted. */
 async function snapshotTab(tabId) {
   const t = await chrome.tabs.get(tabId);
-  const blank = (text) => ({ url: t.url || '', title: t.title || '', headings: [], elements: [], errors: [], popupText: '', scroll: { atTop: true }, text });
+  const isPdf = /\.pdf(\?|#|$)/i.test(t.url || '');
+  const blank = (text) => ({ url: t.url || '', title: t.title || '', headings: [], elements: [], errors: [], popupText: '', scroll: { atTop: true }, text, isPdf });
   if (!scriptable(t.url)) return blank('(This is a browser page that WebPilot cannot read. Use "navigate" to open a website.)');
+  if (isPdf) return blank('(This tab shows a PDF file. To save it, use download with this url.)');
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       await inject(tabId);
-      return await send(tabId, { cmd: 'snapshot' });
+      const snap = await send(tabId, { cmd: 'snapshot' });
+      if (snap.elements.some((e) => e.kind === 'code-editor')) {
+        try {
+          const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageEditor, args: ['get'] });
+          for (const e of snap.elements) if (e.kind === 'code-editor' && result?.[e.id] != null) { e.value = result[e.id].slice(0, 6000); e.lines = result[e.id].split('\n').length; }
+        } catch { /* DOM text is good enough */ }
+      }
+      return snap;
     } catch (e) {
       if (/file URLs/.test(e.message)) throw e;
       if (attempt === 3) return blank(`(WebPilot cannot read this page: ${e.message}. Try navigating somewhere else.)`);
@@ -274,13 +391,57 @@ async function snapshotTab(tabId) {
 
 /** Wait for navigation / loading to finish after a page-changing action. */
 async function settle(tabId) {
-  await sleep(600);
-  for (let i = 0; i < 60; i++) {
+  await sleep(250);
+  for (let i = 0; i < 150; i++) {
     const t = await chrome.tabs.get(tabId).catch(() => null);
     if (!t || t.status === 'complete') break;
-    await sleep(250);
+    await sleep(100);
   }
-  await sleep(500); // let single-page apps render
+  await sleep(350); // let single-page apps render
+}
+
+// ---------- downloads ----------
+/** Records downloads that start while an action runs (e.g. a button that triggers a file). */
+function watchDownloads() {
+  const items = [];
+  const on = (d) => items.push(d);
+  chrome.downloads?.onCreated.addListener(on);
+  return () => { chrome.downloads?.onCreated.removeListener(on); return items; };
+}
+
+async function waitForDownload(id, timeoutMs = 45000) {
+  const t0 = Date.now();
+  let item;
+  while (Date.now() - t0 < timeoutMs) {
+    [item] = await chrome.downloads.search({ id });
+    if (!item || item.state !== 'in_progress') break;
+    await sleep(300);
+  }
+  const file = (item?.filename || item?.url || 'file').split(/[\\/]/).pop();
+  return { id, file, mime: item?.mime || '', state: item?.state || 'unknown', error: item?.error };
+}
+
+async function finishDownload(id) {
+  const info = await waitForDownload(id);
+  if (info.state === 'interrupted') throw new Error(`Download failed (${info.error || 'interrupted'}).`);
+  const notPdf = /html/i.test(info.mime) ? ' — note: this is a web page, not a document' : '';
+  return { detail: `saved ${info.file}${info.state === 'in_progress' ? ' (still downloading)' : ''}${notPdf}`, download: info };
+}
+
+async function downloadFile(a, tabId) {
+  let url = a.url;
+  if (!url && a.target) { await inject(tabId); url = await send(tabId, { cmd: 'href', target: a.target }); }
+  if (url && !/^(javascript:|#)/i.test(url)) {
+    const id = await chrome.downloads.download({ url, conflictAction: 'uniquify' });
+    return finishDownload(id);
+  }
+  // No direct link (JavaScript button): click it and catch the download it starts.
+  const stop = watchDownloads();
+  await perform({ ...a, type: 'click' }, null, tabId);
+  await sleep(2000);
+  const started = stop();
+  if (!started.length) throw new Error('This element has no file link and clicking it did not start a download. Open it and download the file page instead.');
+  return finishDownload(started[0].id);
 }
 
 /** Detects a tab opened by the current one (links with target=_blank) so the agent can follow it. */
@@ -296,6 +457,8 @@ async function perform(a, value, tabId) {
     case 'navigate': await chrome.tabs.update(tabId, { url: a.url }); return { detail: 'opened page' };
     case 'back': await chrome.tabs.goBack(tabId); return { detail: 'went back' };
     case 'wait': await sleep(a.seconds * 1000); return { detail: `waited ${a.seconds}s` };
+    case 'download': return downloadFile(a, tabId);
+    case 'set_code': return writeCode(tabId, a.target, value);
     default:
       await inject(tabId);
       try {
@@ -334,9 +497,77 @@ function describeStep(a, el) {
     case 'scroll': return `scrolled ${a.direction}`;
     case 'wait': return `waited ${a.seconds}s`;
     case 'media': return `${a.op === 'pause' ? 'paused' : 'played'} media${a.target ? ` [${a.target}]` : ''}`;
+    case 'set_code': return `wrote ${String(a.value || '').split('\n').length} lines of code into the editor [${a.target}]`;
+    case 'download': return `downloaded${label || (a.url ? ` ${a.url.slice(0, 80)}` : '')}${a.target ? ` [${a.target}]` : ''}`;
     default: return a.type;
   }
 }
+
+function addTaskPlanCard(tp) {
+  const card = document.createElement('div');
+  card.className = 'taskplan';
+  logEl().appendChild(card);
+  let current = 1;
+  const render = () => {
+    card.innerHTML = `<div class="tp-head">🧭 Plan</div>
+      <div class="tp-goal">${esc(tp.goal)}</div>
+      <ol>${tp.steps.map((st, i) => {
+        const n = i + 1, cls = n < current ? 'done' : n === current ? 'now' : '';
+        return `<li class="${cls}"><span class="ic">${n < current ? '✅' : n === current ? '▶' : n}</span><span>${esc(st)}</span></li>`;
+      }).join('')}</ol>
+      ${tp.success ? `<div class="tp-done">🎯 Done when: ${esc(tp.success)}</div>` : ''}`;
+  };
+  render();
+  scrollLog();
+  return {
+    update(n) { current = n; render(); },
+    setSteps(steps) { tp.steps = steps; render(); },
+  };
+}
+
+/** One system line that updates in place (for model switching / retries). */
+function noticeLine() {
+  let el = null;
+  return (text) => {
+    if (!el) { el = addMsg('system', text); el.classList.add('notice'); } else { el.textContent = text; scrollLog(); }
+  };
+}
+
+const CHECK_TEXT = {
+  media_playing: () => 'the video is playing',
+  download_complete: () => 'the file finished downloading',
+  text_visible: (c) => `the page shows “${c.text}”`,
+  url_contains: (c) => `the address contains “${c.text}”`,
+};
+
+/** Evaluate the plan's machine-checkable success conditions locally (no AI call needed). */
+async function checksPass(checks, snap, tabId, downloads) {
+  const test = (sn) => checks.every((c) => {
+    switch (c.type) {
+      case 'media_playing': return sn.elements.some((e) => e.kind === 'media' && e.playing);
+      case 'download_complete': return downloads.some((d) => d.state === 'complete');
+      case 'text_visible': return [sn.text, sn.title, sn.popupText, ...(sn.headings || [])].join(' ').toLowerCase().includes(c.text.toLowerCase());
+      case 'url_contains': return (sn.url || '').toLowerCase().includes(c.text.toLowerCase());
+      default: return false;
+    }
+  });
+  const why = checks.map((c) => CHECK_TEXT[c.type](c)).join(' and ');
+  if (test(snap)) return { pass: true, snap, why };
+  // a video often starts a moment after the page loads
+  if (checks.some((c) => c.type === 'media_playing') && snap.elements.some((e) => e.kind === 'media' && !e.playing)) {
+    let sn = snap;
+    for (let i = 0; i < 3; i++) {
+      await sleep(800);
+      sn = await snapshotTab(tabId);
+      if (test(sn)) return { pass: true, snap: sn, why };
+    }
+    return { pass: false, snap: sn };
+  }
+  return { pass: false, snap };
+}
+
+const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
+const sameSite = (a, b) => { const x = hostOf(a), y = hostOf(b); return !!x && (x === y || x.endsWith('.' + y) || y.endsWith('.' + x)); };
 
 // ======================================================================
 // Agent loop
@@ -381,7 +612,7 @@ async function runTask(instruction, mode) {
   addMsg('system', `Mode: ${modeName} · ${useAI ? `${PROVIDERS[providerOf(settings)].name.split(' ')[0]} agent` : 'offline matcher (add a free API key in Settings for the full agent)'}`);
 
   const prof = effectiveProfile(profile);
-  const ctx = { askKeys, goal: instruction };
+  const ctx = { askKeys, goal: instruction, codeEditor: false };
   const steps = [];           // what happened so far — fed back to the AI each step
   const missing = new Set();
   const counts = { done: 0, skipped: 0, failed: 0 };
@@ -390,6 +621,10 @@ async function runTask(instruction, mode) {
   let password = null, passwordSite = '';
   let failStreak = 0, lastError = '', repeatStreak = 0, lastPlanKey = '', lastSig = null, budget = MAX_STEPS;
   let nextSnap = null, submitClicked = false;
+  let taskPlan = null, planCard = null, current = 1, pendingStart = null;
+  const downloads = []; // {id, file, mime, state}
+  const tried = new Set(); // built-in moves already used
+  let emptyStreak = 0, aiFail = 0;
 
   const stuck = async (why) => {
     const r = await askUser(`${why}\nYou can fix it on the page yourself, or type a hint, then press Continue.`);
@@ -400,6 +635,21 @@ async function runTask(instruction, mode) {
   };
 
   try {
+    // ---- 1. understand the command and plan before acting ----
+    if (useAI) {
+      updateStatus('Planning…');
+      const first = await snapshotTab(tabId);
+      nextSnap = first;
+      try {
+        taskPlan = await makeTaskPlan({ instruction, snapshot: first, profile: prof, settings, onNotice: noticeLine() });
+        planCard = addTaskPlanCard(taskPlan);
+        if (taskPlan.notes) addMsg('system', taskPlan.notes);
+        if (taskPlan.startUrl && !sameSite(first.url, taskPlan.startUrl)) pendingStart = taskPlan.startUrl;
+      } catch (e) {
+        addMsg('system', `Couldn't make a plan first (${e.message}) — working it out step by step.`);
+      }
+    }
+
     for (let step = 1; !stopRequested; step++) {
       if (--budget < 0) {
         const r = await askUser(`I've taken ${MAX_STEPS} steps and the goal isn't confirmed yet. Should I keep going?`, { continueLabel: 'Keep going' });
@@ -408,9 +658,20 @@ async function runTask(instruction, mode) {
         budget = MAX_STEPS;
       }
 
-      const snap = nextSnap || await snapshotTab(tabId);
+      let snap = nextSnap || await snapshotTab(tabId);
       nextSnap = null;
+      if (taskPlan?.checks?.length && counts.done > 0) {
+        const r = await checksPass(taskPlan.checks, snap, tabId, downloads);
+        snap = r.snap;
+        if (r.pass) {
+          status = 'achieved';
+          note = `Verified: ${r.why}.`;
+          planCard?.update(taskPlan.steps.length + 1);
+          break;
+        }
+      }
       const byId = Object.fromEntries(snap.elements.map((e) => [e.id, e]));
+      ctx.codeEditor = snap.elements.some((e) => e.kind === 'code-editor');
       const sig = signature(snap);
       let host = snap.url;
       try { host = new URL(snap.url).hostname.replace(/^www\./, ''); } catch {}
@@ -418,25 +679,42 @@ async function runTask(instruction, mode) {
 
       // ---- plan ----
       let plan;
-      if (useAI) {
+      if (pendingStart) {
+        // the plan already knows where to go — no need to ask the AI for that
+        plan = { message: `Opening ${hostOf(pendingStart)}…`, status: 'in_progress', missing: [], planStep: 1, revisedSteps: null,
+          actions: [{ type: 'navigate', url: pendingStart, description: `Open ${hostOf(pendingStart)}` }] };
+        pendingStart = null;
+      } else if (useAI) {
         updateStatus('Thinking…');
         try {
           plan = await planWithAI({
             instruction, snapshot: snap, profile: prof, history: steps, step, settings,
-            onNotice: (text) => addMsg('system', text),
+            taskPlan, current, downloads: downloads.map((d) => `"${d.file}" (${d.mime || 'unknown type'}, ${d.state})`),
+            onNotice: noticeLine(),
           });
-          if (plan.model !== activeModel(settings) && plan.model !== lastModelNotice) {
-            addMsg('system', `Thinking with ${plan.model} (${activeModel(settings)} is busy right now).`);
-          }
+          aiFail = 0;
+          if (plan.model !== lastModelNotice) updateStatus(`Thinking · ${plan.model}`);
           lastModelNotice = plan.model;
+          if (plan.rejected?.length) steps.push(`YOUR LAST REPLY HAD INVALID ACTIONS — fix them: ${plan.rejected.join('; ')}`);
         } catch (e) {
-          const fallback = planHeuristic({ instruction, snapshot: snap, profile: prof });
-          if (fallback.actions.length) {
-            addMsg('system', `AI unavailable (${e.message}). Using the offline matcher for this page.`);
-            plan = fallback;
+          aiFail++;
+          const move = fallbackPlan({ instruction, snapshot: snap, tried });
+          const form = move ? null : planHeuristic({ instruction, snapshot: snap, profile: prof });
+          if (move) {
+            addMsg('system', `AI is busy — using a built-in move instead.`);
+            plan = move;
+          } else if (form.actions.length) {
+            addMsg('system', 'AI is busy — using the offline form matcher for this page.');
+            plan = form;
+          } else if (aiFail <= 3) {
+            noticeLine()(`All AI models are busy — retrying in ${aiFail * 5}s…`);
+            await sleep(aiFail * 5000);
+            nextSnap = snap;
+            continue;
           } else {
-            const r = await askUser(`I can't reach the AI right now: ${e.message}`, { continueLabel: 'Retry' });
+            const r = await askUser(`I can't reach any AI model right now (${e.message}). Add a key for another provider in Settings, or retry.`, { continueLabel: 'Retry' });
             if (r.action === 'stop') { status = 'error'; note = e.message; break; }
+            aiFail = 0;
             continue;
           }
         }
@@ -451,6 +729,9 @@ async function runTask(instruction, mode) {
       }
       lastSig = sig;
       plan.missing.forEach((m) => missing.add(m));
+      if (taskPlan && plan.revisedSteps?.length) { planCard.setSteps(plan.revisedSteps); addMsg('system', 'Plan updated to match the site.'); }
+      if (taskPlan && plan.planStep) { current = Math.min(Math.max(plan.planStep, 1), taskPlan.steps.length); planCard.update(current); }
+      if (taskPlan && plan.status === 'achieved' && !plan.actions.length) planCard.update(taskPlan.steps.length + 1);
       if (plan.message) addMsg('assistant', plan.message);
       else if (plan.thought) addMsg('system', plan.thought);
 
@@ -458,9 +739,26 @@ async function runTask(instruction, mode) {
       if (!plan.actions.length) {
         if (plan.status === 'achieved' || !useAI) { status = useAI ? 'achieved' : 'completed'; note = plan.evidence || ''; break; }
         if (plan.status === 'blocked') { status = 'blocked'; note = plan.message || plan.thought; break; }
-        steps.push('(no actions were planned — decide the next concrete action or mark the goal achieved)');
-        if (++failStreak >= 3 && !(await stuck('I’m not sure what to do next on this page.'))) break;
-        continue;
+        emptyStreak++;
+        if (emptyStreak === 1) {
+          steps.push('(your reply had no valid actions — return at least one action using ids copied from ELEMENTS, or status "achieved" with evidence)');
+          nextSnap = snap;
+          continue;
+        }
+        const move = fallbackPlan({ instruction, snapshot: snap, tried });
+        if (move) {
+          plan = move;
+          addMsg('system', `Using a built-in move: ${move.message}`);
+          steps.push(`(WebPilot took a built-in move: ${move.message})`);
+        } else if (emptyStreak < 5) {
+          plan = { message: '', status: 'in_progress', missing: [], actions: [{ type: 'scroll', direction: 'down', description: 'Scroll down to look for more options' }] };
+        } else {
+          if (!(await stuck('I couldn’t find a way forward on this page.'))) break;
+          emptyStreak = 0;
+          continue;
+        }
+      } else {
+        emptyStreak = 0;
       }
 
       // ---- loop guard: same plan on an unchanged page ----
@@ -468,8 +766,18 @@ async function runTask(instruction, mode) {
       repeatStreak = planKey === lastPlanKey ? repeatStreak + 1 : 0;
       lastPlanKey = planKey;
       if (repeatStreak >= 2) {
-        if (!(await stuck(`I keep trying the same thing (“${plan.actions[0].description}”) and nothing changes.`))) break;
-        continue;
+        steps.push('(you proposed the same actions again and they had no effect — choose a DIFFERENT approach)');
+        const move = repeatStreak < 4 ? fallbackPlan({ instruction, snapshot: snap, tried }) : null;
+        if (move) {
+          plan = move;
+          addMsg('system', `Trying a different approach: ${move.message}`);
+        } else if (repeatStreak < 4) {
+          nextSnap = snap;
+          continue;
+        } else {
+          if (!(await stuck(`I keep trying the same thing (“${plan.actions[0].description}”) and nothing changes.`))) break;
+          continue;
+        }
       }
 
       // ---- execute ----
@@ -499,6 +807,8 @@ async function runTask(instruction, mode) {
           value = (a.profileKey && prof[a.profileKey]) || a.value;
         } else if (a.type === 'navigate') {
           value = a.url;
+        } else if (a.type === 'set_code') {
+          value = a.value;
         }
         if ((a.type === 'fill' || a.type === 'select') && (value == null || value === '')) {
           card.set(i, 'skipped', 'no value in your profile');
@@ -531,14 +841,21 @@ async function runTask(instruction, mode) {
         card.set(i, 'running');
         const changing = isPageChanging(a);
         const stopWatching = changing ? watchNewTab(tabId) : null;
+        const stopDl = a.type === 'click' || a.type === 'press' ? watchDownloads() : null;
         try {
           const res = await perform(a, value, tabId);
           counts.done++;
+          if (res?.download) downloads.push(res.download);
           if (a.type === 'click' && /\b(submit|register|sign ?up|create|apply|pay|place order)\b/i.test(el?.label || '')) submitClicked = true;
 
           if (changing || a.type === 'scroll' || a.type === 'wait' || a.type === 'media') {
             if (changing) {
               await settle(tabId);
+              for (const d of stopDl?.() || []) {
+                const info = await waitForDownload(d.id, 30000);
+                downloads.push(info);
+                steps.push(`(that click started a download: "${info.file}", ${info.mime || 'unknown type'}, ${info.state})`);
+              }
               const opened = stopWatching();
               if (opened) {
                 tabId = opened.id;
@@ -565,19 +882,27 @@ async function runTask(instruction, mode) {
           }
         } catch (e) {
           stopWatching?.();
+          stopDl?.();
           card.set(i, 'failed', e.message);
           counts.failed++;
           failStreak++;
           lastError = e.message;
           steps.push(`FAILED ${describeStep(a, el)}: ${e.message}`);
           for (let j = i + 1; j < plan.actions.length; j++) card.set(j, 'skipped', 're-planning after the failure');
+          // A locked-down editor needs one real click from the user to give the page focus — ask right away.
+          if (a.type === 'set_code' && /Click into the editor/.test(e.message)) {
+            const r = await askUser('This site’s code editor only accepts input when the page is focused. Click once inside the code editor, then press Continue and I’ll write the solution.');
+            if (r.action === 'stop') { stopRequested = true; status = 'stopped'; }
+            else { failStreak = 0; steps.push('user clicked into the code editor — retry set_code now'); }
+          }
           break; // re-plan with the failure in mind instead of giving up
         }
-        await sleep(mode === 'full' ? 120 : 200);
+        await sleep(mode === 'full' ? 40 : 150);
       }
 
       if (stopRequested) break;
-      if (failStreak >= 3 && !(await stuck(`I'm stuck — my last attempts didn't work (${lastError}).`))) break;
+      if (failStreak === 3) steps.push('(several attempts failed — change strategy: use the site search, a menu, scroll, a direct URL, or a Google search)');
+      if (failStreak >= 7 && !(await stuck(`I'm stuck — my last attempts didn't work (${lastError}).`))) break;
       if (!useAI && (plan.done || !pageChanged)) {
         status = 'completed';
         note = submitClicked ? 'The form was submitted.' : 'Everything I could fill is filled in. I did not submit — review the page and submit when you are ready.';
@@ -590,13 +915,16 @@ async function runTask(instruction, mode) {
   }
 
   if (stopRequested && !['stopped', 'step-limit'].includes(status)) status = 'stopped';
-  addSummary({ status, counts, missing: [...missing].filter(Boolean), note });
+  const done = downloads.filter((d) => d.state !== 'interrupted');
+  if (done.length) note = `${note ? note + '\n' : ''}📥 Saved to your Downloads folder: ${done.map((d) => d.file).join(', ')}`;
+  addSummary({ status, counts, missing: [...missing].filter(Boolean), note, downloads: done });
   setRunning(false);
   stopRequested = false;
 
   history.unshift({
     time: Date.now(), url: tab.url, title: tab.title, instruction, mode, status, counts,
     password: password ? { site: passwordSite, value: password } : undefined,
+    downloads: downloads.length ? downloads.map((d) => d.file) : undefined,
   });
   history = history.slice(0, 30);
   await store.set('history', history);
@@ -825,7 +1153,7 @@ async function testKey() {
   out.style.color = '';
   out.textContent = `Testing ${p.name} · ${model}… (if it's busy I'll try other models)`;
   try {
-    const used = await testAI(s);
+    const used = await testAI({ ...s, keys: { [providerOf(s)]: activeKey(s) } }); // test only this provider
     out.style.color = 'var(--ok)';
     out.textContent = used === model
       ? `✓ Connected to ${p.name} · ${used}. Click Save to use it.`

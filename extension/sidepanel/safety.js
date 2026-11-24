@@ -14,7 +14,7 @@ const NAV_SAFE = /\b(next|continue|back|previous|prev|proceed to step|save (and|
 const TERMS = /\b(terms|agree|accept|consent|privacy|policy|conditions|declare|declaration)\b/i;
 const SECRET = /\b(otp|one.time|verification code|cvv|cvc|card number|credit card|debit card|atm pin|upi pin|security code|aadhaar|ssn|pan number|account number|routing|ifsc)\b/i;
 
-const GOAL_SUBMITS = /\b(submit|sign ?up|register|create (an |a |my )?account|make (an |a )?account|apply|enrol|enroll|book|send|complete (the |my )?(registration|application|form)|join)\b/i;
+const GOAL_SUBMITS = /\b(solve|submit|sign ?up|register|create (an |a |my )?account|make (an |a )?account|apply|enrol|enroll|book|send|complete (the |my )?(registration|application|form)|join)\b/i;
 const GOAL_HOLDS = /\b(don'?t|do not|without|before) submit|prepare|ready (for|to) submi|review before/i;
 
 /** Does the user's goal itself authorize final submit / sign-up clicks? */
@@ -25,7 +25,7 @@ export function isSecretField(el) {
   return /^cc-|one-time-code/.test(el.autocomplete || '') || SECRET.test(el.label || '');
 }
 
-export function classify(action, el, { askKeys = [], goal = '' } = {}) {
+export function classify(action, el, { askKeys = [], goal = '', codeEditor = false } = {}) {
   const label = el?.label || '';
   const text = `${label} ${action.description || ''}`;
 
@@ -45,6 +45,8 @@ export function classify(action, el, { askKeys = [], goal = '' } = {}) {
     if (CRITICAL.test(label) || (action.sensitive && CRITICAL.test(text))) {
       return { level: 'sensitive', reason: 'payment, purchase or deletion' };
     }
+    // On a coding judge, submitting / running code is the normal workflow, not a risky final submission.
+    if (codeEditor && /\b(submit|run|test|execute|check)\b/i.test(label)) return { level: 'important', reason: 'submits your code to the judge' };
     const isFinal = (FINAL.test(label) && !NAV_SAFE.test(label)) || action.sensitive;
     if (isFinal && action.type === 'click') {
       return goalAuthorizesSubmit(goal)
@@ -59,6 +61,11 @@ export function classify(action, el, { askKeys = [], goal = '' } = {}) {
     return { level: 'routine', reason: '' };
   }
 
+  if (action.type === 'download') {
+    return /\b(download|save|get|fetch|pdf|notification|file|document|form|admit card|syllabus|result)\b/i.test(goal)
+      ? { level: 'important', reason: 'downloads a file you asked for' }
+      : { level: 'sensitive', reason: 'downloads a file your command did not mention' };
+  }
   if (action.type === 'navigate') return { level: 'important', reason: `opens ${action.url}` };
   if (action.type === 'back') return { level: 'important', reason: 'goes back a page' };
   return { level: 'routine', reason: '' }; // scroll, wait, media, ask_user
