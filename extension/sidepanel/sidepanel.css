@@ -177,3 +177,11 @@ table.preview td.old { color: var(--muted); word-break: break-word; }
 .badge.stopped, .badge.needs-help { background: var(--warn-soft); color: var(--warn); }
 .badge.error { background: var(--danger-soft); color: var(--danger); }
 .empty { color: var(--muted); font-size: 12px; text-align: center; padding: 10px; }
+
+/* agent: "your turn" card, new statuses */
+.approval.ask { border-color: var(--accent); background: var(--accent-soft); }
+.approval.ask textarea { margin: 8px 0; resize: vertical; min-height: 38px; }
+.approval.answered textarea { display: none; }
+.badge.achieved { background: #e3f7ec; color: var(--ok); }
+.badge.blocked, .badge.step-limit { background: var(--warn-soft); color: var(--warn); }
+.item .pw { border: 0; background: none; padding: 0 2px; cursor: pointer; font-size: 13px; }

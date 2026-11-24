@@ -1,7 +1,7 @@
 // WebPilot AI — side panel controller and agent loop.
 
 import { PROFILE_FIELDS, FIELD_KEYS, effectiveProfile, IMPORT_PROMPT, parseImport } from './profile.js';
-import { planWithAI, planHeuristic, testAI } from './planner.js';
+import { planWithAI, planHeuristic, testAI, isPageChanging, GENERATED_PASSWORD_KEY } from './planner.js';
 import { PROVIDERS, providerOf, activeKey, activeModel } from './providers.js';
 import { classify, needsApproval } from './safety.js';
 import { store } from './storage.js';
@@ -10,7 +10,6 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const MAX_ROUNDS = 8;
 
 let settings, profile, askKeys, workflows, history;
 let running = false, stopRequested = false, pendingApproval = null, lastModelNotice = null;
@@ -154,26 +153,75 @@ function askApproval({ action, el, value, risk, mode }) {
   });
 }
 
-function addSummary({ status, counts, missing, sensitiveSkipped }) {
+const SUMMARY_TITLES = {
+  achieved: '✅ Goal achieved',
+  completed: '✅ Task complete',
+  stopped: '⏹️ Task stopped',
+  'needs-help': '🙋 I need your help',
+  blocked: '🚫 This can’t be done here',
+  'step-limit': '⏱️ Paused at the step limit',
+  error: '❌ Something went wrong',
+};
+
+function addSummary({ status, counts, missing, note }) {
   const d = document.createElement('div');
-  const cls = status === 'completed' ? '' : status === 'error' ? 'bad' : 'warn';
+  const cls = ['achieved', 'completed'].includes(status) ? '' : status === 'error' ? 'bad' : 'warn';
   d.className = 'summary ' + cls;
-  const title = {
-    completed: '✅ Task complete',
-    stopped: '⏹️ Task stopped',
-    'needs-help': '🙋 I need your help',
-    error: '❌ Something went wrong',
-  }[status];
-  let body = '';
-  if (status === 'completed') {
-    body = sensitiveSkipped
-      ? 'Everything is filled in. I did not submit — review the page and submit when you are ready.'
-      : 'Please review the page to make sure everything looks right.';
-  }
-  if (missing.length) body += `${body ? '\n' : ''}I had no data for: ${missing.join(', ')}. Add them to your Profile or fill them in yourself.`;
-  d.innerHTML = `<h4>${title}</h4>
+  let body = note || '';
+  if (missing.length) body += `${body ? '\n' : ''}I had no data for: ${missing.join(', ')}. Add it to your Profile, or tell me in the task.`;
+  d.innerHTML = `<h4>${SUMMARY_TITLES[status] || status}</h4>
     <div class="stats"><span>✅ ${counts.done} done</span><span>⏭️ ${counts.skipped} skipped</span><span>❌ ${counts.failed} failed</span></div>
     <div style="white-space:pre-wrap">${esc(body)}</div>`;
+  logEl().appendChild(d);
+  scrollLog();
+}
+
+/** Hands control to the user (OTP, CAPTCHA, stuck…). Resolves {action: 'continue'|'stop', answer}. */
+function askUser(question, { continueLabel = 'Done — continue' } = {}) {
+  return new Promise((resolve) => {
+    const card = document.createElement('div');
+    card.className = 'approval ask';
+    card.innerHTML = `
+      <div class="ttl">🙋 Your turn</div>
+      <div style="white-space:pre-wrap">${esc(question)}</div>
+      <textarea rows="2" placeholder="Optional: type an answer or a hint for me"></textarea>
+      <div class="btns">
+        <button class="ok" data-d="continue">${esc(continueLabel)}</button>
+        <button class="small" data-d="stop">Stop task</button>
+      </div>`;
+    logEl().appendChild(card);
+    scrollLog();
+    const ta = card.querySelector('textarea');
+    const finish = (d) => {
+      const answer = ta.value.trim();
+      card.classList.add('answered');
+      card.querySelector('.ttl').textContent += d === 'stop' ? ' — stopped' : answer ? ` — you said: “${answer}”` : ' — continued';
+      pendingApproval = null;
+      updateStatus('Working…');
+      resolve({ action: d, answer });
+    };
+    card.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => finish(b.dataset.d)));
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finish('continue'); } });
+    pendingApproval = finish;
+    updateStatus('Waiting for you');
+    ta.focus();
+  });
+}
+
+function showPasswordCard(password, site) {
+  const d = document.createElement('div');
+  d.className = 'summary warn';
+  d.innerHTML = `<h4>🔑 New password for ${esc(site)}</h4>
+    <div style="display:flex;gap:6px;align-items:center;margin:4px 0">
+      <code style="flex:1;font-size:13px;padding:5px 8px;word-break:break-all">${esc(password)}</code>
+      <button class="small">Copy</button>
+    </div>
+    <div class="hint" style="margin:0">Save it in your password manager. It's also kept on this device under Workflows → History.</div>`;
+  const btn = d.querySelector('button');
+  btn.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(password);
+    btn.textContent = '✓ Copied';
+  });
   logEl().appendChild(d);
   scrollLog();
 }
@@ -186,6 +234,8 @@ async function getActiveTab() {
   return tab;
 }
 
+const scriptable = (url) => /^(https?|file):/i.test(url || '');
+
 async function inject(tabId) {
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content.js'] });
@@ -194,7 +244,7 @@ async function inject(tabId) {
     if ((t.url || '').startsWith('file:')) {
       throw new Error('Chrome blocks extensions on local files by default. Open chrome://extensions → WebPilot AI → Details → enable “Allow access to file URLs”, or serve the page over http.');
     }
-    throw new Error(`I can't access this page (${e.message}). Chrome doesn't allow extensions on some pages such as the Web Store or chrome:// pages.`);
+    throw new Error(`can't access this page (${e.message})`);
   }
 }
 
@@ -205,34 +255,85 @@ async function send(tabId, msg) {
   return r.data;
 }
 
+/** Snapshot of the tab, or a stand-in description when the page can't be scripted. */
+async function snapshotTab(tabId) {
+  const t = await chrome.tabs.get(tabId);
+  const blank = (text) => ({ url: t.url || '', title: t.title || '', headings: [], elements: [], errors: [], popupText: '', scroll: { atTop: true }, text });
+  if (!scriptable(t.url)) return blank('(This is a browser page that WebPilot cannot read. Use "navigate" to open a website.)');
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await inject(tabId);
+      return await send(tabId, { cmd: 'snapshot' });
+    } catch (e) {
+      if (/file URLs/.test(e.message)) throw e;
+      if (attempt === 3) return blank(`(WebPilot cannot read this page: ${e.message}. Try navigating somewhere else.)`);
+      await sleep(800);
+    }
+  }
+}
+
+/** Wait for navigation / loading to finish after a page-changing action. */
 async function settle(tabId) {
-  await sleep(700);
+  await sleep(600);
   for (let i = 0; i < 60; i++) {
-    const t = await chrome.tabs.get(tabId);
-    if (t.status === 'complete') break;
+    const t = await chrome.tabs.get(tabId).catch(() => null);
+    if (!t || t.status === 'complete') break;
     await sleep(250);
   }
-  await sleep(300);
+  await sleep(500); // let single-page apps render
 }
 
-const signature = (snap) => JSON.stringify([snap.url, snap.headings, snap.elements.map((e) => [e.label, e.kind, e.value, e.checked])]);
-
-function resolveValue(a, prof) {
-  if (a.type === 'navigate') return a.url;
-  if (a.type !== 'fill' && a.type !== 'select') return undefined;
-  if (a.profileKey && prof[a.profileKey]) return prof[a.profileKey];
-  return a.value;
+/** Detects a tab opened by the current one (links with target=_blank) so the agent can follow it. */
+function watchNewTab(openerId) {
+  let created = null;
+  const onCreated = (t) => { if (t.openerTabId === openerId) created = t; };
+  chrome.tabs.onCreated.addListener(onCreated);
+  return () => { chrome.tabs.onCreated.removeListener(onCreated); return created; };
 }
 
-function describeDone(a, el) {
-  const label = el?.label ? `“${el.label}”` : '';
+async function perform(a, value, tabId) {
   switch (a.type) {
-    case 'fill': return `filled ${label} ${a.profileKey ? `with profile.${a.profileKey}` : `with "${a.value}"`}`;
-    case 'select': return `selected ${a.profileKey ? `profile.${a.profileKey}` : `"${a.value}"`} in ${label}`;
-    case 'check': return `checked ${label}`;
-    case 'uncheck': return `unchecked ${label}`;
-    case 'click': return `clicked ${label}`;
+    case 'navigate': await chrome.tabs.update(tabId, { url: a.url }); return { detail: 'opened page' };
+    case 'back': await chrome.tabs.goBack(tabId); return { detail: 'went back' };
+    case 'wait': await sleep(a.seconds * 1000); return { detail: `waited ${a.seconds}s` };
+    default:
+      await inject(tabId);
+      try {
+        return await send(tabId, { cmd: 'execute', action: a, value, opts: { allowPassword: a.profileKey === GENERATED_PASSWORD_KEY } });
+      } catch (e) {
+        // the page navigated away before replying — that's what a click/Enter is supposed to do
+        if (isPageChanging(a) && /port closed|receiving end|context invalidated|message channel/i.test(e.message)) return { detail: 'page is loading' };
+        throw e;
+      }
+  }
+}
+
+const signature = (snap) => JSON.stringify([snap.url, snap.headings, snap.popupText, snap.elements.map((e) => [e.label, e.kind, e.value, e.checked, e.playing])]);
+
+function makePassword() {
+  const sets = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnpqrstuvwxyz', '23456789', '!@#$%^&*-_+?'];
+  const all = sets.join('');
+  const rnd = (n) => { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; };
+  const chars = sets.map((s) => s[rnd(s.length)]);
+  while (chars.length < 16) chars.push(all[rnd(all.length)]);
+  for (let i = chars.length - 1; i > 0; i--) { const j = rnd(i + 1); [chars[i], chars[j]] = [chars[j], chars[i]]; }
+  return chars.join('');
+}
+
+function describeStep(a, el) {
+  const label = el?.label ? ` “${el.label.slice(0, 60)}”` : '';
+  switch (a.type) {
+    case 'fill': return `typed ${a.profileKey === GENERATED_PASSWORD_KEY ? 'the generated password' : a.profileKey ? `profile.${a.profileKey}` : `"${a.value}"`} into${label} [${a.target}]`;
+    case 'select': return `selected ${a.profileKey ? `profile.${a.profileKey}` : `"${a.value}"`} in${label} [${a.target}]`;
+    case 'check': return `checked${label} [${a.target}]`;
+    case 'uncheck': return `unchecked${label} [${a.target}]`;
+    case 'click': return `clicked${label} [${a.target}]`;
+    case 'press': return `pressed ${a.key || 'Enter'}${label ? ` in${label}` : ''}${a.target ? ` [${a.target}]` : ''}`;
     case 'navigate': return `navigated to ${a.url}`;
+    case 'back': return 'went back';
+    case 'scroll': return `scrolled ${a.direction}`;
+    case 'wait': return `waited ${a.seconds}s`;
+    case 'media': return `${a.op === 'pause' ? 'paused' : 'played'} media${a.target ? ` [${a.target}]` : ''}`;
     default: return a.type;
   }
 }
@@ -240,6 +341,8 @@ function describeDone(a, el) {
 // ======================================================================
 // Agent loop
 // ======================================================================
+const MAX_STEPS = 30;
+
 function submitTask() {
   const text = $('#task').value.trim();
   if (!text || running) return;
@@ -265,139 +368,236 @@ function setRunning(on) {
 async function runTask(instruction, mode) {
   addMsg('user', instruction);
   const tab = await getActiveTab();
-  if (!tab || !/^(https?|file):/i.test(tab.url || '')) {
-    addMsg('assistant', 'I can only work on regular web pages. Open a website (or the demo form) in this window and try again.');
+  const useAI = !!activeKey(settings);
+  if (!tab) return;
+  if (!scriptable(tab.url) && !useAI) {
+    addMsg('assistant', 'I can only work on regular web pages without an AI key. Open a website (or the demo form), or add a free Groq key in Settings so I can navigate on my own.');
     return;
   }
 
   setRunning(true);
   stopRequested = false;
   const modeName = { full: 'Full Auto', review: 'Review', step: 'Step-by-step' }[mode];
-  addMsg('system', `Mode: ${modeName} · ${activeKey(settings) ? `${PROVIDERS[providerOf(settings)].name.split(' ')[0]} planner` : 'offline matcher (add a free API key in Settings for smarter plans)'}`);
+  addMsg('system', `Mode: ${modeName} · ${useAI ? `${PROVIDERS[providerOf(settings)].name.split(' ')[0]} agent` : 'offline matcher (add a free API key in Settings for the full agent)'}`);
 
   const prof = effectiveProfile(profile);
-  const completed = [];
+  const ctx = { askKeys, goal: instruction };
+  const steps = [];           // what happened so far — fed back to the AI each step
   const missing = new Set();
   const counts = { done: 0, skipped: 0, failed: 0 };
-  let status = 'completed', lastSig = null, sensitiveSkipped = false;
+  let tabId = tab.id;
+  let status = 'stopped', note = '';
+  let password = null, passwordSite = '';
+  let failStreak = 0, lastError = '', repeatStreak = 0, lastPlanKey = '', lastSig = null, budget = MAX_STEPS;
+  let nextSnap = null, submitClicked = false;
+
+  const stuck = async (why) => {
+    const r = await askUser(`${why}\nYou can fix it on the page yourself, or type a hint, then press Continue.`);
+    if (r.action === 'stop') { stopRequested = true; status = 'stopped'; return false; }
+    steps.push(r.answer ? `USER HINT: "${r.answer}"` : 'user intervened manually on the page — re-check it');
+    failStreak = 0; repeatStreak = 0; lastPlanKey = '';
+    return true;
+  };
 
   try {
-    for (let round = 1; round <= MAX_ROUNDS; round++) {
-      if (stopRequested) { status = 'stopped'; break; }
-      await inject(tab.id);
-      const snap = await send(tab.id, { cmd: 'snapshot' });
+    for (let step = 1; !stopRequested; step++) {
+      if (--budget < 0) {
+        const r = await askUser(`I've taken ${MAX_STEPS} steps and the goal isn't confirmed yet. Should I keep going?`, { continueLabel: 'Keep going' });
+        if (r.action === 'stop') { status = 'step-limit'; break; }
+        if (r.answer) steps.push(`USER HINT: "${r.answer}"`);
+        budget = MAX_STEPS;
+      }
+
+      const snap = nextSnap || await snapshotTab(tabId);
+      nextSnap = null;
       const byId = Object.fromEntries(snap.elements.map((e) => [e.id, e]));
       const sig = signature(snap);
-      if (lastSig && sig === lastSig) {
-        addMsg('assistant', "The page didn't change after my last click, so I stopped to avoid repeating myself. Please check the page for errors.");
-        status = 'needs-help';
-        break;
-      }
-      lastSig = sig;
-      addMsg('system', `Analyzing “${snap.headings[0] || snap.title || snap.url}” · ${snap.elements.length} interactive elements`);
+      let host = snap.url;
+      try { host = new URL(snap.url).hostname.replace(/^www\./, ''); } catch {}
+      addMsg('system', `Step ${step} · ${host} · “${(snap.headings[0] || snap.title || '').slice(0, 60)}” · ${snap.elements.length} elements`);
 
+      // ---- plan ----
       let plan;
-      if (activeKey(settings)) {
-        updateStatus('Planning…');
+      if (useAI) {
+        updateStatus('Thinking…');
         try {
           plan = await planWithAI({
-            instruction, snapshot: snap, profile: prof, completed, settings,
+            instruction, snapshot: snap, profile: prof, history: steps, step, settings,
             onNotice: (text) => addMsg('system', text),
           });
           if (plan.model !== activeModel(settings) && plan.model !== lastModelNotice) {
-            addMsg('system', `Planning with ${plan.model} (${activeModel(settings)} is busy right now).`);
+            addMsg('system', `Thinking with ${plan.model} (${activeModel(settings)} is busy right now).`);
           }
           lastModelNotice = plan.model;
         } catch (e) {
-          addMsg('system', `AI planner unavailable (${e.message}). Using the offline matcher instead.`);
-          plan = planHeuristic({ instruction, snapshot: snap, profile: prof });
+          const fallback = planHeuristic({ instruction, snapshot: snap, profile: prof });
+          if (fallback.actions.length) {
+            addMsg('system', `AI unavailable (${e.message}). Using the offline matcher for this page.`);
+            plan = fallback;
+          } else {
+            const r = await askUser(`I can't reach the AI right now: ${e.message}`, { continueLabel: 'Retry' });
+            if (r.action === 'stop') { status = 'error'; note = e.message; break; }
+            continue;
+          }
         }
         updateStatus('Working…');
       } else {
+        if (lastSig && sig === lastSig) {
+          note = "The page didn't change after my last click, so I stopped. Please check the page for errors.";
+          status = 'needs-help';
+          break;
+        }
         plan = planHeuristic({ instruction, snapshot: snap, profile: prof });
       }
-
+      lastSig = sig;
       plan.missing.forEach((m) => missing.add(m));
       if (plan.message) addMsg('assistant', plan.message);
-      if (!plan.actions.length) break;
+      else if (plan.thought) addMsg('system', plan.thought);
 
-      const card = addPlanCard(`Plan · page ${round}`, plan.actions);
+      // ---- finished? ----
+      if (!plan.actions.length) {
+        if (plan.status === 'achieved' || !useAI) { status = useAI ? 'achieved' : 'completed'; note = plan.evidence || ''; break; }
+        if (plan.status === 'blocked') { status = 'blocked'; note = plan.message || plan.thought; break; }
+        steps.push('(no actions were planned — decide the next concrete action or mark the goal achieved)');
+        if (++failStreak >= 3 && !(await stuck('I’m not sure what to do next on this page.'))) break;
+        continue;
+      }
+
+      // ---- loop guard: same plan on an unchanged page ----
+      const planKey = sig + JSON.stringify(plan.actions.map((a) => [a.type, a.target, a.value, a.url, a.key]));
+      repeatStreak = planKey === lastPlanKey ? repeatStreak + 1 : 0;
+      lastPlanKey = planKey;
+      if (repeatStreak >= 2) {
+        if (!(await stuck(`I keep trying the same thing (“${plan.actions[0].description}”) and nothing changes.`))) break;
+        continue;
+      }
+
+      // ---- execute ----
+      const card = addPlanCard(`Step ${step}`, plan.actions);
       let pageChanged = false, approveRest = false;
 
       for (let i = 0; i < plan.actions.length; i++) {
         if (stopRequested) { status = 'stopped'; break; }
         const a = plan.actions[i];
         const el = byId[a.target];
-        const value = resolveValue(a, prof);
 
+        if (a.type === 'ask_user') {
+          card.set(i, 'waiting', 'waiting for you');
+          const r = await askUser(a.question);
+          if (r.action === 'stop') { card.set(i, 'skipped', 'stopped by you'); stopRequested = true; status = 'stopped'; break; }
+          card.set(i, 'done', r.answer ? 'you answered' : 'you handled it');
+          steps.push(`asked the user: "${a.question}" → ${r.answer ? `user answered: "${r.answer}"` : 'user says it is done — re-check the page'}`);
+          pageChanged = true;
+          break;
+        }
+
+        let value;
+        if (a.profileKey === GENERATED_PASSWORD_KEY) {
+          if (!password) { password = makePassword(); passwordSite = host; showPasswordCard(password, host); }
+          value = password;
+        } else if (a.type === 'fill' || a.type === 'select') {
+          value = (a.profileKey && prof[a.profileKey]) || a.value;
+        } else if (a.type === 'navigate') {
+          value = a.url;
+        }
         if ((a.type === 'fill' || a.type === 'select') && (value == null || value === '')) {
           card.set(i, 'skipped', 'no value in your profile');
           missing.add(el?.label || a.profileKey);
+          steps.push(`SKIPPED ${describeStep(a, el)}: profile has no "${a.profileKey}" — ask the user if it's required`);
           counts.skipped++;
           continue;
         }
-        const risk = classify(a, el, askKeys);
-        if (risk.level === 'blocked') { card.set(i, 'skipped', risk.reason); counts.skipped++; continue; }
 
+        const risk = classify(a, el, ctx);
+        if (risk.level === 'blocked') {
+          card.set(i, 'skipped', risk.reason);
+          steps.push(`BLOCKED ${describeStep(a, el)}: ${risk.reason}`);
+          counts.skipped++;
+          continue;
+        }
         if (needsApproval(mode, risk.level) && !(approveRest && risk.level !== 'sensitive')) {
           card.set(i, 'waiting', 'waiting for your approval');
-          const d = await askApproval({ action: a, el, value, risk, mode });
+          const d = await askApproval({ action: a, el, value: a.profileKey === GENERATED_PASSWORD_KEY ? '•••••••• (generated)' : value, risk, mode });
           if (d === 'stop') { card.set(i, 'skipped', 'stopped by you'); stopRequested = true; status = 'stopped'; break; }
           if (d === 'skip') {
             card.set(i, 'skipped', 'skipped by you');
+            steps.push(`user declined: ${describeStep(a, el)} — don't retry it, find another way or finish`);
             counts.skipped++;
-            if (risk.level === 'sensitive' && a.type === 'click') sensitiveSkipped = true;
             continue;
           }
           if (d === 'all') approveRest = true;
         }
 
         card.set(i, 'running');
+        const changing = isPageChanging(a);
+        const stopWatching = changing ? watchNewTab(tabId) : null;
         try {
-          let res;
-          if (a.type === 'navigate') {
-            await chrome.tabs.update(tab.id, { url: a.url });
-            res = { detail: 'opened page' };
-          } else {
-            res = await send(tab.id, { cmd: 'execute', action: a, value });
-          }
-          card.set(i, 'done', res?.detail);
+          const res = await perform(a, value, tabId);
           counts.done++;
-          completed.push(describeDone(a, el));
+          if (a.type === 'click' && /\b(submit|register|sign ?up|create|apply|pay|place order)\b/i.test(el?.label || '')) submitClicked = true;
+
+          if (changing || a.type === 'scroll' || a.type === 'wait' || a.type === 'media') {
+            if (changing) {
+              await settle(tabId);
+              const opened = stopWatching();
+              if (opened) {
+                tabId = opened.id;
+                await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+                await settle(tabId);
+                steps.push(`(a new tab opened — now working in it)`);
+              }
+            }
+            const after = await snapshotTab(tabId);
+            const changed = signature(after) !== sig;
+            const outcome = changed ? `page changed → “${(after.headings[0] || after.title || '').slice(0, 60)}” ${after.url.slice(0, 100)}` : 'NO VISIBLE CHANGE';
+            steps.push(`${describeStep(a, el)} → ${outcome}`);
+            card.set(i, changed ? 'done' : 'failed', changed ? res?.detail : 'no visible change');
+            nextSnap = after;
+            if (changed) failStreak = 0; else { failStreak++; lastError = `“${a.description}” had no effect`; }
+            if (changing) {
+              pageChanged = true;
+              for (let j = i + 1; j < plan.actions.length; j++) card.set(j, 'skipped', 'page changed — re-planning');
+              break;
+            }
+          } else {
+            card.set(i, 'done', res?.detail);
+            steps.push(`${describeStep(a, el)} → ok`);
+          }
         } catch (e) {
+          stopWatching?.();
           card.set(i, 'failed', e.message);
           counts.failed++;
-          addMsg('assistant', `I couldn't complete “${a.description}”: ${e.message}\nI've stopped safely. Fix it on the page or adjust your instruction, then run me again.`);
-          status = 'needs-help';
-          stopRequested = true;
-          break;
-        }
-
-        if (a.type === 'click' || a.type === 'navigate') {
-          await settle(tab.id);
-          pageChanged = true;
-          for (let j = i + 1; j < plan.actions.length; j++) card.set(j, 'skipped', 'page changed — re-planning');
-          break;
+          failStreak++;
+          lastError = e.message;
+          steps.push(`FAILED ${describeStep(a, el)}: ${e.message}`);
+          for (let j = i + 1; j < plan.actions.length; j++) card.set(j, 'skipped', 're-planning after the failure');
+          break; // re-plan with the failure in mind instead of giving up
         }
         await sleep(mode === 'full' ? 120 : 200);
       }
 
-      if (stopRequested || !pageChanged || plan.done) break;
-      if (round === MAX_ROUNDS) addMsg('system', `Reached the ${MAX_ROUNDS}-page safety limit.`);
+      if (stopRequested) break;
+      if (failStreak >= 3 && !(await stuck(`I'm stuck — my last attempts didn't work (${lastError}).`))) break;
+      if (!useAI && (plan.done || !pageChanged)) {
+        status = 'completed';
+        note = submitClicked ? 'The form was submitted.' : 'Everything I could fill is filled in. I did not submit — review the page and submit when you are ready.';
+        break;
+      }
     }
-    // In "prepare for submission" flows, the submit button is intentionally left for the user.
-    if (status === 'completed' && !sensitiveSkipped) sensitiveSkipped = !completed.some((c) => /clicked .*(submit|register|apply|pay)/i.test(c));
   } catch (e) {
     status = 'error';
     addMsg('error', e.message);
   }
 
-  if (stopRequested && status === 'completed') status = 'stopped';
-  addSummary({ status, counts, missing: [...missing].filter(Boolean), sensitiveSkipped });
+  if (stopRequested && !['stopped', 'step-limit'].includes(status)) status = 'stopped';
+  addSummary({ status, counts, missing: [...missing].filter(Boolean), note });
   setRunning(false);
   stopRequested = false;
 
-  history.unshift({ time: Date.now(), url: tab.url, title: tab.title, instruction, mode, status, counts });
+  history.unshift({
+    time: Date.now(), url: tab.url, title: tab.title, instruction, mode, status, counts,
+    password: password ? { site: passwordSite, value: password } : undefined,
+  });
   history = history.slice(0, 30);
   await store.set('history', history);
   renderHistory();
@@ -556,8 +756,14 @@ function renderHistory() {
     <div class="item">
       <div class="body"><div class="name" title="${esc(h.instruction)}">${esc(h.instruction)}</div>
         <div class="sub">${esc(new Date(h.time).toLocaleString())} · ${esc(h.title || h.url)} · ${h.counts.done} actions</div></div>
+      ${h.password ? `<button class="pw" data-pw="${esc(h.password.value)}" title="Copy the password created for ${esc(h.password.site)}">🔑</button>` : ''}
       <span class="badge ${esc(h.status)}">${esc(h.status)}</span>
     </div>`).join('');
+  list.querySelectorAll('[data-pw]').forEach((b) => b.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(b.dataset.pw);
+    b.textContent = '✓';
+    setTimeout(() => { b.textContent = '🔑'; }, 1500);
+  }));
 }
 
 // ======================================================================

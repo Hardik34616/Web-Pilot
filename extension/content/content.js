@@ -1,7 +1,7 @@
 // WebPilot AI — content script.
 // Injected on demand into the active tab. It does two things only:
 //   1. snapshot(): describe the page's interactive elements in a compact, structured form
-//   2. execute(): perform ONE whitelisted action (fill / select / check / uncheck / click)
+//   2. execute(): perform ONE whitelisted action (fill / select / check / click / press / scroll / media)
 // The AI never runs arbitrary JavaScript on the page — every action goes through these functions.
 
 (() => {
@@ -120,85 +120,156 @@
   }
 
   // ---------- snapshot ----------
-  const SELECTOR = 'input, textarea, select, button, a[href], [role="button"], [role="checkbox"], [contenteditable="true"]';
+  const SELECTOR = [
+    'input', 'textarea', 'select', 'button', 'a[href]', 'summary', 'video', 'audio',
+    '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="switch"]', '[role="tab"]',
+    '[role="menuitem"]', '[role="option"]', '[role="combobox"]', '[role="searchbox"]', '[role="textbox"]',
+    '[contenteditable="true"]',
+  ].join(', ');
+  const MAX_ELEMENTS = 260, MAX_LINKS = 140;
 
   function idOf(el) {
     if (!el.dataset.wpId) el.dataset.wpId = PREFIX + ++seq;
     return el.dataset.wpId;
   }
 
-  function snapshot() {
-    const out = [];
-    const seenGroups = new Set();
-    let links = 0;
-    for (const el of document.querySelectorAll(SELECTOR)) {
-      if (el.disabled || el.type === 'hidden') continue;
-      if (el.closest('#__webpilot_overlay')) continue;
-      if (!isUsable(el)) continue;
-      const tag = el.tagName.toLowerCase();
-      const type = (el.getAttribute('type') || '').toLowerCase();
-      const base = { name: el.name || undefined, required: el.required || el.getAttribute('aria-required') === 'true' || undefined };
+  function inViewport(el) {
+    const r = el.getBoundingClientRect();
+    return r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+  }
 
-      if (type === 'radio') {
+  /** The open modal / popup that is covering the page, if any. */
+  function overlayRoot() {
+    const explicit = [...document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')]
+      .filter((d) => isVisible(d) && inViewport(d));
+    if (explicit.length) return explicit[explicit.length - 1];
+    let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+    while (el && el !== document.body && el !== document.documentElement) {
+      const s = getComputedStyle(el);
+      if (s.position === 'fixed' && (parseInt(s.zIndex, 10) || 0) > 0) {
+        const r = el.getBoundingClientRect();
+        if (r.width * r.height > innerWidth * innerHeight * 0.15 && el.querySelector('button, a, [role="button"], input')) return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function describe(el, overlay) {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const role = el.getAttribute('role');
+    let invalid = el.getAttribute('aria-invalid') === 'true';
+    try { invalid = invalid || el.matches(':user-invalid'); } catch {}
+    const base = {
+      name: el.name || undefined,
+      required: el.required || el.getAttribute('aria-required') === 'true' || undefined,
+      invalid: invalid || undefined,
+      popup: overlay && overlay.contains(el) ? true : undefined,
+      offscreen: inViewport(el) ? undefined : true,
+    };
+    if (tag === 'video' || tag === 'audio') {
+      return {
+        id: idOf(el), kind: 'media', label: el.getAttribute('aria-label') || el.title || tag, ...base,
+        playing: !el.paused && !el.ended && el.readyState > 2, paused: el.paused,
+        time: Math.round(el.currentTime || 0), duration: Math.round(el.duration || 0) || undefined,
+      };
+    }
+    if (type === 'checkbox' || role === 'checkbox' || role === 'switch') {
+      const checked = type === 'checkbox' ? el.checked : el.getAttribute('aria-checked') === 'true';
+      return { id: idOf(el), kind: 'checkbox', label: labelFor(el), checked, ...base };
+    }
+    if (tag === 'select') {
+      const opts = [...el.options];
+      const sel = opts[el.selectedIndex];
+      const empty = !sel || sel.value === '' || /^(select|choose|--|please)/i.test(sel.text.trim());
+      return {
+        id: idOf(el), kind: 'select', label: labelFor(el), ...base,
+        options: opts.filter((o) => o.value !== '').map((o) => clean(o.text, 60)).slice(0, 60),
+        value: sel && !empty ? clean(sel.text, 60) : '', empty,
+      };
+    }
+    if (tag === 'a' || role === 'link') {
+      const label = labelFor(el);
+      if (!label) return null;
+      return { id: idOf(el), kind: 'link', label, href: clean(el.getAttribute('href'), 90) || undefined, ...base };
+    }
+    if (tag === 'button' || tag === 'summary' || ['submit', 'button', 'reset', 'image'].includes(type) ||
+        ['button', 'tab', 'menuitem', 'option'].includes(role) || (role === 'combobox' && tag !== 'input')) {
+      const label = labelFor(el);
+      if (!label) return null;
+      return { id: idOf(el), kind: 'button', label, buttonType: type || (tag === 'button' ? 'submit' : role || undefined), ...base };
+    }
+    if ((el.isContentEditable || role === 'textbox' || role === 'searchbox') && tag !== 'input' && tag !== 'textarea') {
+      const v = textOf(el);
+      return { id: idOf(el), kind: 'editable', label: labelFor(el), value: v, empty: !v, ...base };
+    }
+    if (tag === 'textarea' || tag === 'input') {
+      if (['file', 'range', 'color', 'hidden'].includes(type)) return null;
+      const secret = type === 'password';
+      return {
+        id: idOf(el), kind: tag === 'textarea' ? 'textarea' : 'text', inputType: type || 'text',
+        label: labelFor(el), placeholder: clean(el.placeholder, 60) || undefined,
+        autocomplete: el.getAttribute('autocomplete') || undefined, ...base,
+        value: secret ? (el.value ? '••••' : '') : clean(el.value, 80), empty: !el.value,
+      };
+    }
+    return null;
+  }
+
+  function snapshot() {
+    const overlay = overlayRoot();
+    const items = [];
+    const seenGroups = new Set();
+    for (const el of document.querySelectorAll(SELECTOR)) {
+      if (el.disabled) continue;
+      if (el.closest('#__webpilot_overlay')) continue;
+      const isMedia = el.tagName === 'VIDEO' || el.tagName === 'AUDIO';
+      if (!isMedia && !isUsable(el)) continue;
+      if (isMedia && !isVisible(el) && !(el.currentTime > 0)) continue;
+      if (el.type === 'radio') {
         const key = (el.form ? 'f' : 'd') + ':' + el.name;
         if (!el.name || seenGroups.has(key)) continue;
         seenGroups.add(key);
         const radios = radiosOf(el);
         const checked = radios.find((r) => r.checked);
-        out.push({
-          id: idOf(radios[0]), kind: 'radio-group', label: radioGroupLabel(radios), ...base,
-          options: radios.map(radioOptionLabel), value: checked ? radioOptionLabel(checked) : '',
-          empty: !checked,
+        items.push({
+          id: idOf(radios[0]), kind: 'radio-group', label: radioGroupLabel(radios),
+          popup: overlay && overlay.contains(el) ? true : undefined, offscreen: inViewport(el) ? undefined : true,
+          options: radios.map(radioOptionLabel), value: checked ? radioOptionLabel(checked) : '', empty: !checked,
         });
         continue;
       }
-      if (type === 'checkbox' || el.getAttribute('role') === 'checkbox') {
-        const checked = type === 'checkbox' ? el.checked : el.getAttribute('aria-checked') === 'true';
-        out.push({ id: idOf(el), kind: 'checkbox', label: labelFor(el), checked, ...base });
-        continue;
-      }
-      if (tag === 'select') {
-        const opts = [...el.options];
-        const sel = opts[el.selectedIndex];
-        const empty = !sel || sel.value === '' || /^(select|choose|--|please)/i.test(sel.text.trim());
-        out.push({
-          id: idOf(el), kind: 'select', label: labelFor(el), ...base,
-          options: opts.filter((o) => o.value !== '').map((o) => clean(o.text, 60)).slice(0, 60),
-          value: sel && !empty ? clean(sel.text, 60) : '', empty,
-        });
-        continue;
-      }
-      if (tag === 'button' || type === 'submit' || type === 'button' || type === 'reset' || type === 'image' || el.getAttribute('role') === 'button') {
-        out.push({ id: idOf(el), kind: 'button', label: labelFor(el), buttonType: type || (tag === 'button' ? 'submit' : undefined) });
-        continue;
-      }
-      if (tag === 'a') {
-        if (++links > 30) continue;
-        const label = labelFor(el);
-        if (!label) continue;
-        out.push({ id: idOf(el), kind: 'link', label, href: clean(el.getAttribute('href'), 100) });
-        continue;
-      }
-      if (el.isContentEditable && tag !== 'input' && tag !== 'textarea') {
-        const v = textOf(el);
-        out.push({ id: idOf(el), kind: 'editable', label: labelFor(el), value: v, empty: !v });
-        continue;
-      }
-      if (tag === 'textarea' || tag === 'input') {
-        if (['file', 'range', 'color'].includes(type)) continue;
-        const secret = type === 'password';
-        out.push({
-          id: idOf(el), kind: tag === 'textarea' ? 'textarea' : 'text', inputType: type || 'text',
-          label: labelFor(el), placeholder: clean(el.placeholder, 60) || undefined,
-          autocomplete: el.getAttribute('autocomplete') || undefined, ...base,
-          value: secret ? (el.value ? '••••' : '') : clean(el.value, 80), empty: !el.value,
-        });
-      }
-      if (out.length >= 220) break;
+      const d = describe(el, overlay);
+      if (d) items.push(d);
+      if (items.length > 1500) break;
     }
+    // Priority: popup first, then what's on screen, then the rest of the page.
+    const rank = (e) => (e.popup ? 0 : e.offscreen ? 2 : 1);
+    const ordered = items.map((e, i) => [e, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map((x) => x[0]);
+    const out = [];
+    let links = 0;
+    for (const e of ordered) {
+      if (e.kind === 'link' && ++links > MAX_LINKS) continue;
+      out.push(e);
+      if (out.length >= MAX_ELEMENTS) break;
+    }
+
     const headings = [...document.querySelectorAll('h1, h2, h3, legend')]
-      .filter(isVisible).map((h) => textOf(h)).filter(Boolean).slice(0, 8);
-    return { url: location.href, title: document.title, headings, elements: out };
+      .filter((h) => isVisible(h) && inViewport(h)).map((h) => textOf(h)).filter(Boolean).slice(0, 8);
+    const errors = [...document.querySelectorAll('[role="alert"], [aria-live="assertive"], .error, .errors, .invalid-feedback, .field-error, [class*="error-message"], [class*="errorMessage"]')]
+      .filter(isVisible).map((n) => textOf(n)).filter((t) => t && t.length < 200);
+    const main = document.querySelector('main, [role="main"]') || document.body;
+    return {
+      url: location.href,
+      title: document.title,
+      headings,
+      popupText: overlay ? clean(overlay.innerText, 400) : '',
+      errors: [...new Set(errors)].slice(0, 6),
+      text: clean(main ? main.innerText : '', 1500),
+      scroll: { atTop: scrollY < 50, atBottom: innerHeight + scrollY >= document.documentElement.scrollHeight - 50 },
+      elements: out,
+    };
   }
 
   // ---------- option matching (CSE ⇄ Computer Science and Engineering) ----------
@@ -251,11 +322,6 @@
     return s;
   }
 
-  function isSecretField(el) {
-    const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
-    return el.type === 'password' || ac.startsWith('cc-') || ac === 'one-time-code' || ac.includes('password');
-  }
-
   // ---------- highlight overlay ----------
   let overlayTimer;
   function highlight(el, text) {
@@ -288,10 +354,68 @@
   }
 
   // ---------- execute ----------
-  async function execute(action, value) {
+  function isPaymentOrOtp(el) {
+    const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+    return ac.startsWith('cc-') || ac === 'one-time-code' || /\b(otp|cvv|cvc|card number)\b/i.test(labelFor(el));
+  }
+
+  function realClick(el) {
+    const r = el.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    try {
+      el.dispatchEvent(new PointerEvent('pointerdown', o));
+      el.dispatchEvent(new MouseEvent('mousedown', o));
+      if (el.focus) el.focus({ preventScroll: true });
+      el.dispatchEvent(new PointerEvent('pointerup', o));
+      el.dispatchEvent(new MouseEvent('mouseup', o));
+    } catch {}
+    el.click();
+  }
+
+  const KEYCODES = { Enter: 13, Escape: 27, Tab: 9, ArrowDown: 40, ArrowUp: 38, ' ': 32 };
+
+  async function pressKey(el, key) {
+    const init = { key, code: key === ' ' ? 'Space' : key, keyCode: KEYCODES[key] || 0, which: KEYCODES[key] || 0, bubbles: true, cancelable: true, composed: true };
+    const target = el || document.activeElement || document.body;
+    if (target.focus) target.focus();
+    const notPrevented = target.dispatchEvent(new KeyboardEvent('keydown', init));
+    target.dispatchEvent(new KeyboardEvent('keypress', init));
+    target.dispatchEvent(new KeyboardEvent('keyup', init));
+    if (key !== 'Enter' || !notPrevented) return;
+    // Synthetic key events don't trigger the browser's default "submit on Enter", so do it explicitly.
+    await sleep(150);
+    if (!target.isConnected) return;
+    const form = target.form || (target.closest && target.closest('form'));
+    if (form) {
+      if (form.requestSubmit) form.requestSubmit(); else form.submit();
+      return;
+    }
+    const box = target.closest && target.closest('[role="search"], header, nav, div');
+    const btn = box && box.querySelector('button[type="submit"], button[aria-label*="search" i], [role="button"][aria-label*="search" i], button[title*="search" i]');
+    if (btn) realClick(btn);
+  }
+
+  async function execute(action, value, opts = {}) {
+    // page-level actions (no target element)
+    if (action.type === 'scroll') {
+      const dy = (action.direction === 'up' ? -1 : 1) * Math.round(innerHeight * 0.85);
+      scrollBy({ top: dy, behavior: 'smooth' });
+      await sleep(700);
+      return { detail: `scrolled ${action.direction === 'up' ? 'up' : 'down'}` };
+    }
+    if (action.type === 'press' && !action.target) {
+      await pressKey(null, action.key || 'Enter');
+      return { detail: `pressed ${action.key || 'Enter'}` };
+    }
+    if (action.type === 'media' && !action.target) {
+      const m = [...document.querySelectorAll('video, audio')].find((v) => isVisible(v)) || document.querySelector('video, audio');
+      if (!m) throw new Error('There is no video or audio on this page.');
+      action = { ...action, target: idOf(m) };
+    }
+
     const el = document.querySelector(`[data-wp-id="${CSS.escape(action.target || '')}"]`);
-    if (!el) throw new Error('The element is no longer on the page (it may have changed).');
-    if (!el.isConnected || el.disabled) throw new Error('The element is disabled or not available.');
+    if (!el) throw new Error('That element is no longer on the page (the page may have changed).');
+    if (el.disabled) throw new Error('That element is disabled.');
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     await sleep(220);
 
@@ -302,8 +426,9 @@
 
     switch (type) {
       case 'fill': {
-        if (isSecretField(el)) throw new Error('WebPilot never fills passwords, OTPs or card details.');
-        highlight(el, `Filling “${label}”`);
+        if (isPaymentOrOtp(el)) throw new Error('WebPilot never fills OTPs or card details.');
+        if (el.type === 'password' && !opts.allowPassword) throw new Error('Password fields can only be filled with a password generated by WebPilot.');
+        highlight(el, `Typing in “${clean(label, 40)}”`);
         el.focus();
         if (el.isContentEditable && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') {
           document.execCommand('selectAll', false);
@@ -312,17 +437,16 @@
           const v = el.type === 'date' ? toISODate(value) : String(value);
           setNativeValue(el, v);
         }
-        el.dispatchEvent(new Event('blur', { bubbles: true }));
-        return { detail: `filled “${label}”` };
+        return { detail: `typed into “${clean(label, 40)}”` };
       }
       case 'select': {
-        highlight(el, `Selecting in “${label}”`);
+        highlight(el, `Selecting in “${clean(label, 40)}”`);
         if (el.tagName === 'SELECT') {
-          const opts = [...el.options].filter((o) => o.value !== '');
-          const idx = bestOption(opts.map((o) => ({ text: o.text, value: o.value })), value);
-          if (idx < 0) throw new Error(`No option matching “${value}” in “${label}”.`);
-          setNativeValue(el, opts[idx].value);
-          return { detail: `chose “${clean(opts[idx].text, 60)}”` };
+          const list = [...el.options].filter((o) => o.value !== '');
+          const idx = bestOption(list.map((o) => ({ text: o.text, value: o.value })), value);
+          if (idx < 0) throw new Error(`No option matching “${value}” in “${label}”. Options: ${list.slice(0, 12).map((o) => clean(o.text, 30)).join(', ')}`);
+          setNativeValue(el, list[idx].value);
+          return { detail: `chose “${clean(list[idx].text, 60)}”` };
         }
         const radios = radiosOf(el);
         const idx = bestOption(radios.map((r) => ({ text: radioOptionLabel(r), value: r.value })), value);
@@ -334,8 +458,9 @@
       case 'uncheck': {
         const want = type === 'check';
         highlight(el, `${want ? 'Checking' : 'Unchecking'} “${clean(label, 40)}”`);
-        if (el.getAttribute('role') === 'checkbox') {
-          if ((el.getAttribute('aria-checked') === 'true') !== want) el.click();
+        const role = el.getAttribute('role');
+        if (role === 'checkbox' || role === 'switch') {
+          if ((el.getAttribute('aria-checked') === 'true') !== want) realClick(el);
         } else if (el.checked !== want) {
           el.click();
           if (el.checked !== want) {
@@ -347,9 +472,29 @@
       }
       case 'click': {
         highlight(el, `Clicking “${clean(label, 40)}”`);
-        await sleep(350);
-        el.click();
+        await sleep(300);
+        realClick(el);
         return { detail: `clicked “${clean(label, 40)}”` };
+      }
+      case 'press': {
+        const key = action.key || 'Enter';
+        highlight(el, `Pressing ${key}`);
+        await sleep(200);
+        await pressKey(el, key);
+        return { detail: `pressed ${key}` };
+      }
+      case 'media': {
+        if (el.tagName !== 'VIDEO' && el.tagName !== 'AUDIO') throw new Error('That element is not a video or audio player.');
+        highlight(el, action.op === 'pause' ? 'Pausing' : 'Playing');
+        if (action.op === 'pause') { el.pause(); return { detail: 'paused' }; }
+        try {
+          await el.play();
+        } catch {
+          realClick(el);
+          await sleep(500);
+          if (el.paused) throw new Error('The browser blocked playback. Try clicking the play button instead.');
+        }
+        return { detail: 'playing' };
       }
       default:
         throw new Error('Unsupported action: ' + action.type);
@@ -361,7 +506,7 @@
       try {
         if (msg.cmd === 'ping') return sendResponse({ ok: true });
         if (msg.cmd === 'snapshot') return sendResponse({ ok: true, data: snapshot() });
-        if (msg.cmd === 'execute') return sendResponse({ ok: true, data: await execute(msg.action, msg.value) });
+        if (msg.cmd === 'execute') return sendResponse({ ok: true, data: await execute(msg.action, msg.value, msg.opts) });
         sendResponse({ ok: false, error: 'Unknown command' });
       } catch (e) {
         sendResponse({ ok: false, error: e.message || String(e) });

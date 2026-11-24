@@ -42,23 +42,38 @@ Choose the provider, paste the key, and click **Test connection**, then **Save**
 | Step | What to show |
 |---|---|
 | 1 | Profile tab → **Copy prompt** → paste into ChatGPT → paste the reply back → **Preview import** → **Import selected**. |
-| 2 | Open the demo form. Mode: **Review**. Run *"Fill my details, select CSE as my branch, accept the terms and prepare the form for submission"*. |
-| 3 | Watch the live plan: fields highlight on the page as they're filled. WebPilot pauses before **Next →** and before accepting the terms. Approve both. |
-| 4 | It moves through all 3 steps, maps "CSE" to *Computer Science and Engineering*, and **stops before Submit Registration**. |
-| 5 | Switch to **Full Auto** and run *"Fill everything and submit the form"*. Routine steps run automatically, but the **Submit** click still asks for approval (red card). |
-| 6 | Try **Step-by-step** to show per-action approval, then the **Workflows** tab (saved tasks + action history). |
+| 2 | Open http://localhost:5500/demo/ in **Review** mode. Run *"Fill my details, select CSE as my branch, accept the terms and prepare the form for submission"*. It goes through all 3 steps, maps "CSE" to *Computer Science and Engineering*, and **stops before Submit Registration**. |
+| 3 | Open http://localhost:5500/demo/signup.html in **Full Auto**. Run *"Create an account on this site using my details"*. It dismisses the cookie pop-up, fills the form, **generates a secure password** (shown to you with a Copy button), reads the site's error message, fixes it, submits, and **confirms "Account created!"** from the page. |
+| 4 | Open a new tab and run *"Open YouTube and play the GTA 6 trailer"*. It navigates, searches, opens the video and checks that it's actually **playing** before it says it's done. |
+| 5 | Run *"Fill everything and pay"* on any checkout page. The payment click always shows a red approval card, even in Full Auto. |
+| 6 | Show the **Workflows** tab: saved tasks, action history and 🔑 saved passwords. |
+
+---
+
+## How the agent thinks
+
+WebPilot runs a **goal-driven loop**, not a one-shot plan:
+
+1. **Look:** snapshot the page: interactive elements (pop-ups first, then what's on screen), visible text, error messages, video play state.
+2. **Think:** the LLM compares the page with the goal and returns the next 1–6 actions. Each step it sees the full history, e.g. `clicked "Search" → NO VISIBLE CHANGE` or `FAILED: no option matching…`.
+3. **Act:** each action is safety-checked, approved if needed, then executed. After any click, Enter, navigation or back, it looks again.
+4. **Verify:** it only finishes when the **current page proves the goal is done** (success message, video playing, results shown), with evidence.
+5. **Recover:** failed actions are re-planned in a different way. If it repeats itself with no progress, or fails 3 times in a row, it **hands control to you** ("Your turn" card, where you can fix things on the page or type a hint) and then carries on.
+
+Actions available to the AI: `fill`, `select`, `check`/`uncheck`, `click`, `press` (Enter/Escape/Tab…), `navigate`, `back`, `scroll`, `wait`, `media` (play/pause), `ask_user`. Links that open in a new tab are followed automatically.
 
 ---
 
 ## Autonomy modes
 
-| Mode | Routine fills | Clicks / navigation / terms | Submit, pay, delete · 🔒 fields |
-|---|---|---|---|
-| ⚡ Full Auto | auto | auto | **asks** |
-| 👀 Review | auto | **asks** | **asks** |
-| 🪜 Step-by-step | **asks** | **asks** | **asks** |
+| Mode | Typing / scrolling | Clicks, navigation, terms, generated password | Submit / sign-up | Pay, buy, delete · 🔒 fields |
+|---|---|---|---|---|
+| ⚡ Full Auto | auto | auto | auto **if your goal asks for it**, otherwise asks | **always asks** |
+| 👀 Review | auto | **asks** | **asks** | **always asks** |
+| 🪜 Step-by-step | **asks** | **asks** | **asks** | **always asks** |
 
-Some actions are **always blocked**: filling passwords, OTPs, card numbers or ID numbers.
+- **Never done by WebPilot:** typing OTPs/verification codes, card/CVV/bank/government ID numbers, or solving CAPTCHAs. It pauses and asks you to do these, then continues.
+- **Passwords:** WebPilot only types passwords **it generated for a new account**. Each one is shown to you, with a Copy button and a copy in History. Logging in to existing accounts is left to you.
 
 ---
 
@@ -68,23 +83,22 @@ Some actions are **always blocked**: filling passwords, OTPs, card numbers or ID
 extension/
 ├── manifest.json          MV3: side panel, scripting, storage
 ├── background.js          opens the side panel on icon click
-├── content/content.js     page snapshot + whitelisted action executor (fill/select/check/click)
+├── content/content.js     page snapshot (pop-ups, media, errors) + whitelisted action executor
 └── sidepanel/
     ├── sidepanel.html/css UI: Agent · Profile · Workflows · Settings
-    ├── sidepanel.js       agent loop: snapshot → plan → classify → approve → execute → re-plan
-    ├── planner.js         LLM prompt + offline heuristic planner + plan validation
+    ├── sidepanel.js       agent loop: look → think → act → verify → recover
+    ├── planner.js         agent prompt, plan validation, privacy masking, offline planner
     ├── providers.js       Groq / OpenRouter / Gemini clients with retry + model fallback
     ├── safety.js          risk classification (routine / important / sensitive / blocked)
     ├── profile.js         profile fields, label→field matching, AI-import prompt & parser
     └── storage.js         chrome.storage.local wrapper
-demo/index.html            3-step dummy registration site
+demo/index.html            3-step dummy registration form
+demo/signup.html           dummy sign-up page (with a cookie pop-up)
 ```
 
-**Agent loop:** for each page, the content script returns a compact list of interactive elements (labels, kinds, options, current values). The planner returns structured JSON actions. Each action is validated against the snapshot, classified by `safety.js` and either run or sent to the user for approval. After any click or navigation, the page is snapshotted again and re-planned, which is how multi-step forms work. If the page doesn't change, or an element disappears, WebPilot **stops safely and asks for help**.
-
 **Privacy by design:**
-- Profile values are stored only in `chrome.storage.local` and are **never sent to the LLM**. The AI sees field *names* only and returns `{"profileKey": "email"}` references. Values are filled in locally.
-- The AI can't run JavaScript. It can only request `fill / select / check / uncheck / click / navigate` on element IDs that exist in the snapshot.
+- Profile values are stored only in `chrome.storage.local` and are **never sent to the LLM**. The AI sees field *names* and returns `{"profileKey": "email"}` references, which are filled in locally. Once a value has been typed into a page, later snapshots mask it as `[your email]` before they're sent.
+- The AI can't run JavaScript. It can only request whitelisted actions on elements that exist in the snapshot.
 
 **Robustness details:** native value setters plus `input`/`change` events (works with React and Vue forms); fuzzy option matching (`CSE` → *Computer Science and Engineering*, `3` → *3rd Year*); date normalization (`14/08/2004` → `2004-08-14`); radio groups; custom-styled checkboxes; an on-page highlight overlay.
 
