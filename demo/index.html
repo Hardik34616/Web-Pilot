@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nova Techfest 2026 — Student Registration</title>
+  <style>
+    :root { --a: #0f766e; --a2: #14b8a6; --bg: #f3f6f8; --t: #0f172a; --m: #64748b; --b: #dbe3ea; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.5 system-ui, "Segoe UI", sans-serif; background: var(--bg); color: var(--t); }
+    header { background: linear-gradient(120deg, var(--a), var(--a2)); color: #fff; padding: 28px 16px 70px; text-align: center; }
+    header h1 { margin: 0; font-size: 26px; }
+    header p { margin: 4px 0 0; opacity: .9; }
+    main { max-width: 640px; margin: -50px auto 40px; padding: 0 16px; }
+    .card { background: #fff; border-radius: 16px; box-shadow: 0 10px 30px rgba(15, 23, 42, .08); padding: 26px; }
+    .progress { display: flex; gap: 8px; margin-bottom: 22px; }
+    .progress div { flex: 1; text-align: center; font-size: 12px; color: var(--m); }
+    .progress div::before { content: ""; display: block; height: 5px; border-radius: 3px; background: var(--b); margin-bottom: 6px; }
+    .progress div.on { color: var(--a); font-weight: 600; }
+    .progress div.on::before { background: var(--a2); }
+    h2 { margin: 0 0 16px; font-size: 19px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .full { grid-column: 1 / -1; }
+    label.f { display: block; font-size: 13px; font-weight: 600; color: #334155; }
+    label.f input, label.f select, label.f textarea, .f input, .f select, .f textarea {
+      display: block; width: 100%; margin-top: 5px; padding: 10px 12px; font: inherit; border: 1px solid var(--b); border-radius: 10px; background: #fff;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a2); box-shadow: 0 0 0 3px #ccfbf1; }
+    .req { color: #dc2626; }
+    .radios { display: flex; gap: 16px; margin-top: 8px; font-weight: 400; }
+    .radios label { display: flex; gap: 6px; align-items: center; font-size: 14px; }
+    .check { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; font-size: 14px; }
+    .check input { margin-top: 4px; }
+    .actions { display: flex; justify-content: space-between; margin-top: 24px; }
+    button { font: inherit; font-weight: 600; border-radius: 10px; padding: 10px 20px; cursor: pointer; border: 1px solid var(--b); background: #fff; }
+    button.primary { background: var(--a); color: #fff; border-color: var(--a); }
+    button.primary:hover { background: #115e59; }
+    .err { color: #dc2626; font-size: 13px; margin-top: 10px; min-height: 18px; }
+    .step { display: none; }
+    .step.on { display: block; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    td { padding: 6px 4px; border-bottom: 1px solid #eef2f6; }
+    td:first-child { color: var(--m); width: 40%; }
+    .success { text-align: center; padding: 30px 10px; }
+    .success .big { font-size: 54px; }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🚀 Nova Techfest 2026</h1>
+    <p>Student Registration · Hackathons, workshops &amp; talks</p>
+  </header>
+
+  <main>
+    <div class="card">
+      <div class="progress" id="progress">
+        <div class="on">1. Personal</div><div>2. Academic</div><div>3. Review &amp; Submit</div>
+      </div>
+
+      <form id="reg" novalidate>
+        <!-- STEP 1 -->
+        <section class="step on" data-step="1">
+          <h2>Personal details</h2>
+          <div class="grid">
+            <label class="f full">Full Name <span class="req">*</span>
+              <input name="full_name" required placeholder="As on your college ID" />
+            </label>
+            <label class="f">Email Address <span class="req">*</span>
+              <input name="email" type="email" required placeholder="you@example.com" />
+            </label>
+            <label class="f">Mobile Number <span class="req">*</span>
+              <input name="mobile" type="tel" required placeholder="10-digit number" />
+            </label>
+            <label class="f">Date of Birth
+              <input name="dob" type="date" />
+            </label>
+            <label class="f">City
+              <input name="city" placeholder="e.g. Bengaluru" />
+            </label>
+            <div class="f full">
+              <span>Gender</span>
+              <div class="radios">
+                <label><input type="radio" name="gender" value="male" /> Male</label>
+                <label><input type="radio" name="gender" value="female" /> Female</label>
+                <label><input type="radio" name="gender" value="other" /> Prefer not to say</label>
+              </div>
+            </div>
+          </div>
+          <div class="err"></div>
+          <div class="actions"><span></span><button type="button" class="primary" data-next>Next →</button></div>
+        </section>
+
+        <!-- STEP 2 -->
+        <section class="step" data-step="2">
+          <h2>Academic details</h2>
+          <div class="grid">
+            <label class="f full">College / University <span class="req">*</span>
+              <input name="college" required />
+            </label>
+            <label class="f">Degree <span class="req">*</span>
+              <select name="degree" required>
+                <option value="">Select degree</option>
+                <option>B.Tech</option><option>B.E.</option><option>BCA</option><option>B.Sc</option><option>M.Tech</option><option>MCA</option>
+              </select>
+            </label>
+            <label class="f">Branch <span class="req">*</span>
+              <select name="branch" required>
+                <option value="">Select branch</option>
+                <option>Computer Science and Engineering</option>
+                <option>Information Science and Engineering</option>
+                <option>Electronics and Communication Engineering</option>
+                <option>Artificial Intelligence and Machine Learning</option>
+                <option>Mechanical Engineering</option>
+                <option>Civil Engineering</option>
+              </select>
+            </label>
+            <label class="f">Year of Study <span class="req">*</span>
+              <select name="year" required>
+                <option value="">Select year</option>
+                <option>1st Year</option><option>2nd Year</option><option>3rd Year</option><option>4th Year</option>
+              </select>
+            </label>
+            <label class="f">CGPA
+              <input name="cgpa" placeholder="e.g. 8.7" />
+            </label>
+            <label class="f full">Skills
+              <textarea name="skills" rows="2" placeholder="e.g. React, Python, UI design"></textarea>
+            </label>
+            <label class="f">GitHub Profile
+              <input name="github" placeholder="https://github.com/…" />
+            </label>
+            <label class="f">LinkedIn Profile
+              <input name="linkedin" placeholder="https://linkedin.com/in/…" />
+            </label>
+          </div>
+          <div class="err"></div>
+          <div class="actions"><button type="button" data-back>← Back</button><button type="button" class="primary" data-next>Next →</button></div>
+        </section>
+
+        <!-- STEP 3 -->
+        <section class="step" data-step="3">
+          <h2>Review &amp; submit</h2>
+          <table id="summary"></table>
+          <label class="f full" style="margin-top:16px">Which events interest you?
+            <select name="track">
+              <option value="">Choose a track</option>
+              <option>24-hour Hackathon</option><option>Web Development Workshop</option><option>AI/ML Bootcamp</option><option>Robotics Challenge</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" name="newsletter" /> Send me updates about future events</label>
+          <label class="check"><input type="checkbox" name="terms" required /> I agree to the Terms &amp; Conditions and the Code of Conduct <span class="req">*</span></label>
+          <div class="err"></div>
+          <div class="actions"><button type="button" data-back>← Back</button><button type="submit" class="primary">Submit Registration</button></div>
+        </section>
+      </form>
+
+      <div class="success" id="success" hidden>
+        <div class="big">🎉</div>
+        <h2>Registration successful!</h2>
+        <p>Your registration ID is <b id="regId"></b>. A confirmation has been "sent" to <b id="regEmail"></b>.</p>
+        <p style="color:var(--m);font-size:13px">(This is a demo page — nothing was sent anywhere.)</p>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const form = document.getElementById('reg');
+    const steps = [...document.querySelectorAll('.step')];
+    let cur = 0;
+    const labels = { full_name: 'Name', email: 'Email', mobile: 'Mobile', dob: 'Date of birth', city: 'City', gender: 'Gender', college: 'College', degree: 'Degree', branch: 'Branch', year: 'Year', cgpa: 'CGPA', skills: 'Skills', github: 'GitHub', linkedin: 'LinkedIn' };
+
+    function show(i) {
+      steps.forEach((s, k) => s.classList.toggle('on', k === i));
+      [...document.querySelectorAll('#progress div')].forEach((d, k) => d.classList.toggle('on', k <= i));
+      cur = i;
+      if (i === 2) {
+        const fd = new FormData(form);
+        document.getElementById('summary').innerHTML = Object.entries(labels)
+          .map(([k, l]) => `<tr><td>${l}</td><td>${(fd.get(k) || '—').toString().replace(/</g, '&lt;')}</td></tr>`).join('');
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    function valid(step) {
+      const bad = [...step.querySelectorAll('[required]')].filter((el) => el.type === 'checkbox' ? !el.checked : !el.value.trim());
+      step.querySelector('.err').textContent = bad.length ? 'Please fill all required fields (*).' : '';
+      return !bad.length;
+    }
+    document.querySelectorAll('[data-next]').forEach((b) => b.addEventListener('click', () => { if (valid(steps[cur])) show(cur + 1); }));
+    document.querySelectorAll('[data-back]').forEach((b) => b.addEventListener('click', () => show(cur - 1)));
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!valid(steps[cur])) return;
+      form.hidden = true;
+      document.getElementById('progress').hidden = true;
+      document.getElementById('regId').textContent = 'NTF26-' + Math.floor(10000 + Math.random() * 90000);
+      document.getElementById('regEmail').textContent = form.email.value;
+      document.getElementById('success').hidden = false;
+    });
+  </script>
+</body>
+</html>

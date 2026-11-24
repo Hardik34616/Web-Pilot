@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebPilot AI</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img src="../icons/icon32.png" alt="" width="22" height="22" />
+      <span>WebPilot <b>AI</b></span>
+    </div>
+    <div class="status" id="status" title="Planner">
+      <span class="dot"></span><span id="statusText">Offline matcher</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="agent" role="tab">Agent</button>
+    <button class="tab" data-tab="profile" role="tab">Profile</button>
+    <button class="tab" data-tab="workflows" role="tab">Workflows</button>
+    <button class="tab" data-tab="settings" role="tab">Settings</button>
+  </nav>
+
+  <!-- ================= AGENT ================= -->
+  <section class="panel active" id="tab-agent">
+    <div class="log" id="log">
+      <div class="welcome" id="welcome">
+        <h2>What should I do on this page?</h2>
+        <p>Describe a task in plain English. I'll analyze the page, show you a plan, and act — pausing whenever your approval is needed.</p>
+        <div class="chips">
+          <button class="chip">Fill this form with my details</button>
+          <button class="chip">Fill my details, select CSE as my branch, accept the terms and prepare the form for submission</button>
+          <button class="chip">Fill everything and submit the form</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="modes" role="radiogroup" aria-label="Autonomy mode">
+        <label title="Routine actions run automatically. Submit, payment and delete still need your OK.">
+          <input type="radio" name="mode" value="full" /><span>⚡ Full Auto</span>
+        </label>
+        <label title="Fills fields automatically, pauses before clicks, navigation, terms and sensitive steps.">
+          <input type="radio" name="mode" value="review" /><span>👀 Review</span>
+        </label>
+        <label title="Asks for approval before every action.">
+          <input type="radio" name="mode" value="step" /><span>🪜 Step-by-step</span>
+        </label>
+      </div>
+      <div class="inputwrap">
+        <textarea id="task" rows="2" placeholder="e.g. Fill this registration form, select CSE as my branch and accept the terms"></textarea>
+        <button id="run" class="primary icon" title="Run (Enter)">➤</button>
+        <button id="stop" class="danger icon" title="Stop" hidden>■</button>
+      </div>
+      <div class="composer-foot">
+        <button id="saveWf" class="link">☆ Save as workflow</button>
+        <button id="clearLog" class="link">Clear chat</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PROFILE ================= -->
+  <section class="panel" id="tab-profile">
+    <div class="card accent">
+      <h3>✨ Import from ChatGPT or Gemini</h3>
+      <ol class="steps">
+        <li><button id="copyPrompt" class="small">Copy prompt</button> and paste it into ChatGPT or Gemini.</li>
+        <li>Paste the assistant's reply below and preview it.</li>
+      </ol>
+      <textarea id="importText" rows="4" placeholder='Paste the JSON reply here, e.g. { "fullName": "Asha Rao", ... }'></textarea>
+      <div class="row"><button id="previewImport" class="small">Preview import</button></div>
+      <div id="importPreview"></div>
+      <p class="hint">WebPilot never reads your assistant's memory directly — you control what gets imported.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>🔐 Profile Vault</h3>
+        <span class="hint">Stored only on this device. 🔒 = ask before using.</span>
+      </div>
+      <form id="profileForm"></form>
+      <label class="field">
+        <span>Custom fields <em>(one per line: <code>key: value</code>)</em></span>
+        <textarea id="customFields" rows="3" placeholder="hackerrank: https://hackerrank.com/asha&#10;tshirt size: M"></textarea>
+      </label>
+      <div class="row sticky">
+        <button id="saveProfile" class="primary">Save profile</button>
+        <button id="clearProfile" class="ghost">Clear</button>
+        <span id="profileSaved" class="saved"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= WORKFLOWS ================= -->
+  <section class="panel" id="tab-workflows">
+    <div class="card">
+      <h3>⭐ Saved workflows</h3>
+      <div id="wfList" class="list"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>🕘 Action history</h3><button id="clearHistory" class="link">Clear</button></div>
+      <div id="historyList" class="list"></div>
+    </div>
+  </section>
+
+  <!-- ================= SETTINGS ================= -->
+  <section class="panel" id="tab-settings">
+    <div class="card">
+      <h3>🧠 AI planner</h3>
+      <p class="hint">Add a free API key for full natural-language understanding. Without one, WebPilot uses its built-in offline form matcher.</p>
+      <label class="field"><span>AI provider</span>
+        <select id="provider">
+          <option value="groq">Groq — free, very fast (recommended)</option>
+          <option value="openrouter">OpenRouter — free models</option>
+          <option value="gemini">Google Gemini</option>
+        </select>
+      </label>
+      <label class="field"><span id="keyLabel">API key</span>
+        <input id="apiKey" type="password" placeholder="" autocomplete="off" />
+      </label>
+      <p class="hint" style="margin-top:-4px">Get a free key: <a id="keyLink" href="#" target="_blank" rel="noopener"></a></p>
+      <label class="field"><span>Model <em>(optional — leave blank for the default)</em></span>
+        <input id="model" type="text" placeholder="" />
+      </label>
+      <label class="field"><span>Default autonomy mode</span>
+        <select id="defaultMode">
+          <option value="full">Full Auto</option>
+          <option value="review">Review</option>
+          <option value="step">Step-by-step</option>
+        </select>
+      </label>
+      <div class="row">
+        <button id="saveSettings" class="primary">Save</button>
+        <button id="testKey" class="ghost">Test connection</button>
+        <span id="settingsSaved" class="saved"></span>
+      </div>
+      <p id="testResult" class="hint"></p>
+      <p class="hint">If the chosen model is overloaded, WebPilot retries and then switches to another model from the same provider. If every model is busy, it falls back to the offline matcher.</p>
+    </div>
+    <div class="card">
+      <h3>🛡️ Privacy &amp; safety</h3>
+      <ul class="bullets">
+        <li>Your profile values are <b>never sent to the AI</b>. The model only sees field names and returns references like <code>profileKey: "email"</code>, which are filled in locally.</li>
+        <li>The AI can only request whitelisted actions (fill, select, check, click, navigate) — it never runs code on the page.</li>
+        <li>Passwords, OTPs, card and ID numbers are never filled.</li>
+        <li>Submit, payment and delete buttons always require your approval — even in Full Auto.</li>
+      </ul>
+    </div>
+  </section>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>
