@@ -7,15 +7,16 @@ WebPilot is a Chrome (Manifest V3) side-panel extension. You type something like
 
 ---
 ## SCREENSHOTS
-![APPSS](images/Screenshot 2026-11-24 233540.png)
+![Screenshot 1](images/Screenshot%202026-11-24%20233540.png)
+![Screenshot 2](images/Screenshot%202026-11-24%20233604.png)
 
 
 ## Quick start (2 minutes)
 
 1. **Load the extension**
-   - Open `chrome://extensions` and turn on **Developer mode** (top right).
-   - Click **Load unpacked** and select the `extension/` folder.
-   - Pin WebPilot AI and click its icon, or press **Alt+Shift+W**. The side panel opens.
+  - Open `chrome://extensions` and turn on **Developer mode** (top right).
+  - Click **Load unpacked** and select the `extension/` folder.
+  - Pin WebPilot AI and click its icon, or press **Alt+Shift+W**. The side panel opens.
 2. **Fill your profile.** Go to the **Profile** tab and either type your details or use **✨ Import from ChatGPT / Gemini**.
 3. **Open the demo form.** Serve the repo over HTTP:
    ```powershell
