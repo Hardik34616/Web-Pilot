@@ -6,6 +6,9 @@ Built for wHACKiest 2026 · Track 02: Beyond the Browser.
 WebPilot is a Chrome (Manifest V3) side-panel extension. You type something like *"Fill my details, select CSE as my branch, accept the terms and prepare the form for submission"*. WebPilot reads the page, builds a plan you can see, fills the fields, picks dropdown and radio options, ticks checkboxes and moves through multi-step forms. It stops before anything irreversible.
 
 ---
+## SCREENSHOTS
+![APPSS](images/Screenshot 2026-11-24 233540.png)
+
 
 ## Quick start (2 minutes)
 
