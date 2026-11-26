@@ -2,9 +2,11 @@
 
 import { PROFILE_FIELDS, FIELD_KEYS, effectiveProfile, IMPORT_PROMPT, parseImport } from './profile.js';
 import { planWithAI, planHeuristic, fallbackPlan, testAI, makeTaskPlan, isPageChanging, GENERATED_PASSWORD_KEY } from './planner.js';
-import { PROVIDERS, providerOf, activeKey, activeModel } from './providers.js';
+import { PROVIDERS, providerOf, activeKey, activeModel, visionModelsFor } from './providers.js';
 import { classify, needsApproval } from './safety.js';
 import { store } from './storage.js';
+import * as cdp from './input.js';
+import { icon } from './icons.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -36,7 +38,7 @@ async function init() {
   });
   $('#run').addEventListener('click', submitTask);
   $('#stop').addEventListener('click', requestStop);
-  $$('.chip').forEach((c) => c.addEventListener('click', () => { task.value = c.textContent; autoGrow(); task.focus(); }));
+  $$('.chip').forEach((c) => c.addEventListener('click', () => { task.value = c.dataset.prompt || c.textContent.trim(); autoGrow(); task.focus(); }));
   $('#saveWf').addEventListener('click', saveWorkflow);
   $('#clearLog').addEventListener('click', () => { if (!running) $('#log').innerHTML = ''; });
 
@@ -58,6 +60,55 @@ async function init() {
   renderWorkflows();
   renderHistory();
   updateStatus();
+
+  // header
+  $('#openSettings').addEventListener('click', () => showTab('settings'));
+  $('#modelPill').addEventListener('click', () => showTab('settings'));
+  $('#closePanel').addEventListener('click', () => window.close());
+  // appearance
+  applyTheme(settings.theme || 'system');
+  $('#theme').addEventListener('change', () => applyTheme($('#theme').value));
+  setActivity('idle', 'Ready');
+}
+
+// ---------- theme (Light / Dark / System) ----------
+// theme-init.js applies the saved choice before first paint (no flash); this keeps it in sync.
+function applyTheme(t) {
+  const theme = ['light', 'dark', 'system'].includes(t) ? t : 'system';
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('wp-theme', theme); } catch {}
+  const sel = $('#theme');
+  if (sel && sel.value !== theme) sel.value = theme;
+}
+
+// ---------- activity indicator: what the agent is doing right now ----------
+let activityTimer = null;
+function setActivity(kind, text) {
+  const el = $('#activity');
+  if (!el) return;
+  clearTimeout(activityTimer);
+  el.dataset.kind = kind; // idle | busy | wait | done | warn
+  $('#activityText').textContent = text;
+  if (kind === 'done' || kind === 'warn') activityTimer = setTimeout(() => { if (!running) setActivity('idle', 'Ready'); }, 8000);
+}
+
+function activityFor(a, el) {
+  const lbl = el?.label ? ` “${el.label.slice(0, 30)}”` : '';
+  switch (a.type) {
+    case 'click': return `Clicking${lbl}`;
+    case 'fill': return `Typing${lbl ? ' in' + lbl : ''}`;
+    case 'select': case 'choose': return `Selecting${a.value ? ` “${String(a.value).slice(0, 24)}”` : lbl}`;
+    case 'check': case 'uncheck': return `Toggling${lbl}`;
+    case 'press': return `Pressing ${a.key || 'Enter'}`;
+    case 'navigate': return `Navigating to ${hostOf(a.url) || 'page'}`;
+    case 'back': return 'Navigating back';
+    case 'scroll': return 'Scrolling';
+    case 'wait': return 'Waiting for page';
+    case 'media': return 'Controlling media';
+    case 'download': return 'Downloading file';
+    case 'set_code': return 'Writing code';
+    default: return 'Working';
+  }
 }
 
 function showTab(name) {
@@ -72,8 +123,11 @@ function flash(sel, text) { const el = $(sel); el.textContent = text; setTimeout
 function updateStatus(busyText) {
   const s = $('#status');
   s.classList.toggle('ai', !!activeKey(settings));
-  s.classList.toggle('busy', !!busyText);
-  $('#statusText').textContent = busyText || (activeKey(settings) ? `${PROVIDERS[providerOf(settings)].name.split(' ')[0]} · ${lastModelNotice || activeModel(settings)}` : 'Offline matcher');
+  $('#statusText').textContent = activeKey(settings) ? `${PROVIDERS[providerOf(settings)].name.split(' ')[0]} · ${lastModelNotice || activeModel(settings)}` : 'Offline matcher';
+  if (busyText) {
+    const t = String(busyText).replace(/…$/, '').replace(/^Thinking · .*/, 'Thinking');
+    setActivity(/waiting/i.test(t) ? 'wait' : 'busy', /^waiting for you$/i.test(t) ? 'Action requires approval' : t);
+  }
 }
 
 // ======================================================================
@@ -91,7 +145,7 @@ function addMsg(role, text) {
   return d;
 }
 
-const ICONS = { pending: '○', running: '<span class="spin"></span>', done: '✅', skipped: '⏭️', failed: '❌', waiting: '⏸️' };
+const ICONS = { pending: '<span class="st"></span>', running: '<span class="spin"></span>', done: icon('check', 13), skipped: icon('skip', 13), failed: icon('x', 13), waiting: icon('pause', 13) };
 
 function addPlanCard(title, actions) {
   const card = document.createElement('div');
@@ -127,7 +181,7 @@ function askApproval({ action, el, value, risk, mode }) {
     card.className = 'approval' + (risk.level === 'sensitive' ? ' sensitive' : '');
     const showVal = value != null && value !== '' && action.type !== 'click';
     card.innerHTML = `
-      <div class="ttl">${risk.level === 'sensitive' ? '⚠️ Approval needed' : '✋ Review this step'}</div>
+      <div class="ttl">${risk.level === 'sensitive' ? 'Approval needed' : 'Review this step'}</div>
       <div>${esc(action.description)}</div>
       ${showVal ? `<div style="margin-top:4px">Value: <span class="val" style="white-space:pre-wrap">${esc(String(value).slice(0, 400))}${String(value).length > 400 ? '…' : ''}</span></div>` : ''}
       <div class="meta">${esc(el?.label ? `Element: “${el.label}”` : '')}${risk.reason ? ' · ' + esc(risk.reason) : ''}</div>
@@ -154,13 +208,13 @@ function askApproval({ action, el, value, risk, mode }) {
 }
 
 const SUMMARY_TITLES = {
-  achieved: '✅ Goal achieved',
-  completed: '✅ Task complete',
-  stopped: '⏹️ Task stopped',
-  'needs-help': '🙋 I need your help',
-  blocked: '🚫 This can’t be done here',
-  'step-limit': '⏱️ Paused at the step limit',
-  error: '❌ Something went wrong',
+  achieved: 'Goal achieved',
+  completed: 'Task complete',
+  stopped: 'Task stopped',
+  'needs-help': 'Needs your help',
+  blocked: 'Can’t be done here',
+  'step-limit': 'Paused at step limit',
+  error: 'Something went wrong',
 };
 
 function addSummary({ status, counts, missing, note, downloads = [] }) {
@@ -170,9 +224,9 @@ function addSummary({ status, counts, missing, note, downloads = [] }) {
   let body = note || '';
   if (missing.length) body += `${body ? '\n' : ''}I had no data for: ${missing.join(', ')}. Add it to your Profile, or tell me in the task.`;
   d.innerHTML = `<h4>${SUMMARY_TITLES[status] || status}</h4>
-    <div class="stats"><span>✅ ${counts.done} done</span><span>⏭️ ${counts.skipped} skipped</span><span>❌ ${counts.failed} failed</span></div>
-    <div style="white-space:pre-wrap">${esc(body)}</div>
-    ${downloads.length ? '<div class="row"><button class="small" data-show>📂 Show in folder</button></div>' : ''}`;
+    <div class="stats"><span>${counts.done} done</span><span>${counts.skipped} skipped</span><span>${counts.failed} failed</span></div>
+    ${body ? `<div class="sum-body">${esc(body)}</div>` : ''}
+    ${downloads.length ? `<div class="row"><button class="small" data-show>${icon('folder')} Show in folder</button></div>` : ''}`;
   d.querySelector('[data-show]')?.addEventListener('click', () => chrome.downloads.show(downloads[downloads.length - 1].id));
   logEl().appendChild(d);
   scrollLog();
@@ -184,7 +238,7 @@ function askUser(question, { continueLabel = 'Done — continue' } = {}) {
     const card = document.createElement('div');
     card.className = 'approval ask';
     card.innerHTML = `
-      <div class="ttl">🙋 Your turn</div>
+      <div class="ttl">Your turn</div>
       <div style="white-space:pre-wrap">${esc(question)}</div>
       <textarea rows="2" placeholder="Optional: type an answer or a hint for me"></textarea>
       <div class="btns">
@@ -213,7 +267,7 @@ function askUser(question, { continueLabel = 'Done — continue' } = {}) {
 function showPasswordCard(password, site) {
   const d = document.createElement('div');
   d.className = 'summary warn';
-  d.innerHTML = `<h4>🔑 New password for ${esc(site)}</h4>
+  d.innerHTML = `<h4>${icon('key')} New password for ${esc(site)}</h4>
     <div style="display:flex;gap:6px;align-items:center;margin:4px 0">
       <code style="flex:1;font-size:13px;padding:5px 8px;word-break:break-all">${esc(password)}</code>
       <button class="small">Copy</button>
@@ -222,7 +276,7 @@ function showPasswordCard(password, site) {
   const btn = d.querySelector('button');
   btn.addEventListener('click', async () => {
     await navigator.clipboard.writeText(password);
-    btn.textContent = '✓ Copied';
+    btn.textContent = 'Copied';
   });
   logEl().appendChild(d);
   scrollLog();
@@ -238,23 +292,65 @@ async function getActiveTab() {
 
 const scriptable = (url) => /^(https?|file):/i.test(url || '');
 
+/** Rejects if a promise takes longer than ms (a hung page must never freeze the agent). */
+function withTimeout(promise, ms, message) {
+  let t;
+  return Promise.race([promise, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(message)), ms); })]).finally(() => clearTimeout(t));
+}
+
 async function inject(tabId) {
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content.js'] });
-  } catch (e) {
-    const t = await chrome.tabs.get(tabId);
-    if ((t.url || '').startsWith('file:')) {
-      throw new Error('Chrome blocks extensions on local files by default. Open chrome://extensions → WebPilot AI → Details → enable “Allow access to file URLs”, or serve the page over http.');
+    // every frame, so forms inside iframes (logins, embedded forms, rich-text editors) are visible too
+    await withTimeout(chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['content/content.js'] }), 8000, 'injecting timed out');
+  } catch {
+    try {
+      await withTimeout(chrome.scripting.executeScript({ target: { tabId }, files: ['content/content.js'] }), 8000, 'the page is not responding');
+    } catch (e) {
+      const t = await chrome.tabs.get(tabId).catch(() => null);
+      if (!t) throw new Error('The tab I was working in was closed.');
+      if ((t.url || '').startsWith('file:')) {
+        throw new Error('Chrome blocks extensions on local files by default. Open chrome://extensions → WebPilot AI → Details → enable “Allow access to file URLs”, or serve the page over http.');
+      }
+      throw new Error(`can't access this page (${e.message})`);
     }
-    throw new Error(`can't access this page (${e.message})`);
   }
 }
 
-async function send(tabId, msg) {
-  const r = await chrome.tabs.sendMessage(tabId, msg);
+// Which frame each element id lives in (ids are unique across frames), and where each frame sits on screen.
+const frameOf = new Map();
+const SEND_TIMEOUT = { snapshot: 15000, execute: 20000, locate: 6000, options: 5000, value: 4000, marks: 4000, unmarks: 3000, href: 4000, frameOffset: 3000, stable: 6000, ping: 1500 };
+
+async function send(tabId, msg, frameId) {
+  const target = msg.target || msg.action?.target || msg.near;
+  const fid = frameId ?? (target && frameOf.get(target)) ?? 0;
+  const once = () => withTimeout(chrome.tabs.sendMessage(tabId, msg, { frameId: fid }), SEND_TIMEOUT[msg.cmd] || 10000,
+    `The page didn't answer in time (${msg.cmd}) — it may be busy or frozen.`);
+  let r;
+  try {
+    r = await once();
+  } catch (e) {
+    // The message was never delivered (page reloaded / navigated and lost the helper): re-inject and retry once.
+    if (!/receiving end|could not establish connection|no frame with id/i.test(e.message || '')) throw e;
+    await inject(tabId);
+    r = await once();
+  }
   if (!r) throw new Error('The page did not respond.');
   if (!r.ok) throw new Error(r.error);
   return r.data;
+}
+
+/** locate + translate the element's position from its frame into top-window coordinates (for real clicks). */
+async function locateEl(tabId, id, text) {
+  const loc = await send(tabId, { cmd: 'locate', target: id, text });
+  loc.off = { x: 0, y: 0 };
+  const fid = frameOf.get(id) || 0;
+  if (fid) {
+    const off = await send(tabId, { cmd: 'frameOffset' }, fid).catch(() => null);
+    if (!off) loc.noReal = true; // unknown position → let the in-page (simulated) path handle it
+    else { loc.off = off; loc.x += off.x; loc.y += off.y; }
+  }
+  if (loc.hidden) loc.noReal = true;
+  return loc;
 }
 
 // ---------- code editors (Monaco / CodeMirror / Ace) ----------
@@ -345,16 +441,35 @@ const normCode = (c) => String(c || '').replace(/\s+/g, '');
 
 /** Replace the editor's code and confirm it actually landed. */
 async function writeCode(tabId, editorId, code) {
-  const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageEditor, args: ['set', editorId, code] });
+  const frameIds = [frameOf.get(editorId) || 0];
+  try { const l = await locateEl(tabId, editorId, 'Writing code'); if (!l.noReal) { await cursorMove(tabId, l.x, l.y, 'Writing code'); cursorOp(tabId, 'click'); } } catch {}
+  const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId, frameIds }, world: 'MAIN', func: pageEditor, args: ['set', editorId, code] });
   if (!result?.ok) throw new Error(`Couldn't write into the code editor (${result?.how || 'no editor'}).`);
   await sleep(250);
-  const [{ result: now } = {}] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageEditor, args: ['get'] });
+  const [{ result: now } = {}] = await chrome.scripting.executeScript({ target: { tabId, frameIds }, world: 'MAIN', func: pageEditor, args: ['get'] });
   let landed = now?.[editorId];
   if (landed == null) { // no API access — read the DOM text instead
     const snap = await send(tabId, { cmd: 'snapshot' });
     landed = snap.elements.find((e) => e.id === editorId)?.value;
   }
-  const want = normCode(code), got = normCode(landed);
+  const want = normCode(code);
+  let got = normCode(landed);
+  // No editor API: paste with a REAL Ctrl+V (pasting avoids the editor's auto-indent / auto-close).
+  if (landed != null && !(got === want || got.includes(want.slice(0, 60))) && result.how === 'paste' && realInputOn) {
+    try {
+      await cdp.attach(tabId);
+      const loc = await locateEl(tabId, editorId, 'Pasting code');
+      await cdp.click(tabId, loc.x, loc.y);
+      await cdp.selectAll(tabId);
+      await navigator.clipboard.writeText(code); // the side panel has focus, so it may write the clipboard
+      await cdp.press(tabId, 'v', /Mac/i.test(navigator.platform) ? 4 : 2, ['paste']);
+      await sleep(300);
+      const snap = await send(tabId, { cmd: 'snapshot' });
+      landed = snap.elements.find((e) => e.id === editorId)?.value;
+      got = normCode(landed);
+      if (got === want || got.includes(want.slice(0, 60))) return { detail: `wrote ${code.split('\n').length} lines of code (real paste)` };
+    } catch { /* fall through to asking the user */ }
+  }
   if (landed != null && !(got === want || got.includes(want.slice(0, 60)))) {
     throw new Error(result.how === 'paste'
       ? "This site's code editor doesn't expose an API and ignored pasted input while the page isn't focused. Click into the editor once, then let me continue."
@@ -363,9 +478,165 @@ async function writeCode(tabId, editorId, code) {
   return { detail: `wrote ${code.split('\n').length} lines of code (${result.how})` };
 }
 
+// ---------- agent cursor ----------
+// Drawn in the page's top frame and moved to the exact coordinates the real click / typing is about to use,
+// so what you see is what the agent does. Purely visual: pointer-events:none, never intercepts input.
+const lastCursor = new Map(); // tabId → last position (so the cursor continues from there after a navigation)
+const short = (t, n = 28) => { const v = String(t || ''); return v.length > n ? v.slice(0, n - 1) + '…' : v; };
+async function cursorMove(tabId, x, y, label) {
+  try {
+    await send(tabId, { cmd: 'cursor', op: 'move', x: Math.round(x), y: Math.round(y), label, from: lastCursor.get(tabId) }, 0);
+    lastCursor.set(tabId, { x: Math.round(x), y: Math.round(y) });
+  } catch { /* purely visual — never block the action */ }
+}
+const cursorOp = (tabId, op, label) => send(tabId, { cmd: 'cursor', op, label }, 0).catch(() => {});
+
+// ---------- real input (trusted clicks & keys via the Chrome debugger) ----------
+let realInputOn = false, realInputWarned = false;
+const normVal = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** Perform click / fill / check / press with genuine input. Returns null to let the JS path handle it. */
+async function realPerform(a, value, tabId) {
+  try {
+    if (!(await cdp.attach(tabId))) return null;
+  } catch (e) {
+    if (!realInputWarned) { realInputWarned = true; addMsg('system', `Real clicks unavailable here (${e.message}) — using simulated input.`); }
+    return null;
+  }
+  if (a.type === 'press' && !a.target) { cursorOp(tabId, 'tag', `Press ${a.key || 'Enter'}`); await cdp.press(tabId, a.key || 'Enter'); return { detail: `pressed ${a.key || 'Enter'} (real key)` }; }
+  const verb = { click: 'Clicking', fill: 'Typing', check: 'Checking', uncheck: 'Unchecking', press: 'Pressing ' + (a.key || 'Enter') }[a.type];
+  const loc = await locateEl(tabId, a.target, verb);
+  if (loc.noReal) return null;
+  // Covered at every point we tried: a real click would hit the overlay, so let the in-page path click the
+  // element directly (works for most banners); the agent sees from the page whether it had an effect.
+  if (loc.covered) return null;
+  switch (a.type) {
+    case 'click':
+      await cursorMove(tabId, loc.x, loc.y, `Click “${short(loc.label)}”`);
+      cursorOp(tabId, 'click');
+      await cdp.click(tabId, loc.x, loc.y);
+      return { detail: `clicked “${loc.label}” (real click)` };
+    case 'check':
+    case 'uncheck': {
+      const want = a.type === 'check';
+      if (loc.checked === want) return { detail: `already ${want ? 'checked' : 'unchecked'}` };
+      await cursorMove(tabId, loc.x, loc.y, want ? 'Check' : 'Uncheck');
+      cursorOp(tabId, 'click');
+      await cdp.click(tabId, loc.x, loc.y);
+      return { detail: `${want ? 'checked' : 'unchecked'} (real click)` };
+    }
+    case 'fill': {
+      if (loc.isSelect || !loc.editable || ['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range', 'file'].includes(loc.type)) return null;
+      if (loc.blocked) throw new Error('WebPilot never types CAPTCHAs, OTPs or card details — ask the user.');
+      if (loc.type === 'password' && a.profileKey !== GENERATED_PASSWORD_KEY) throw new Error('Password fields can only be filled with a password generated by WebPilot — ask the user to type their password.');
+      await cursorMove(tabId, loc.x, loc.y, `Typing in “${short(loc.label)}”`);
+      cursorOp(tabId, 'click');
+      await cdp.click(tabId, loc.x, loc.y);
+      if (loc.readOnly) throw new Error(`“${loc.label}” is read-only — probably a date or option picker. I clicked it; choose the value from the picker that opened.`);
+      await sleep(60);
+      await cdp.selectAll(tabId);
+      await cdp.press(tabId, 'Backspace');
+      await cdp.typeText(tabId, String(value));
+      cursorOp(tabId, 'tag', '');
+      await sleep(150);
+      const now = await send(tabId, { cmd: 'value', target: a.target }).catch(() => null);
+      if (now != null && loc.type !== 'password' && normVal(now) !== normVal(value)) {
+        if (!String(now).trim()) return null; // nothing landed — let the JS setter try
+        return { detail: `typed into “${loc.label}” — the field now shows “${String(now).slice(0, 40)}”` };
+      }
+      return { detail: `typed into “${loc.label}” (real keys)` };
+    }
+    case 'press':
+      await cursorMove(tabId, loc.x, loc.y, `Press ${a.key || 'Enter'}`);
+      if (!loc.focused) { cursorOp(tabId, 'click'); await cdp.click(tabId, loc.x, loc.y); }
+      await cdp.press(tabId, a.key || 'Enter');
+      return { detail: `pressed ${a.key || 'Enter'} (real key)` };
+    default:
+      return null;
+  }
+}
+
+// ---------- vision: an annotated screenshot of the visible page ----------
+async function captureScreen(tabId, snap) {
+  const tab = await chrome.tabs.get(tabId);
+  const ids = snap.elements.filter((e) => !e.offscreen && e.kind !== 'code-editor').slice(0, 90).map((e) => e.id);
+  const byFrame = new Map();
+  for (const id of ids) { const f = frameOf.get(id) || 0; if (!byFrame.has(f)) byFrame.set(f, []); byFrame.get(f).push(id); }
+  await Promise.all([...byFrame].map(([f, list]) => send(tabId, { cmd: 'marks', ids: list }, f).catch(() => {})));
+  await sleep(50);
+  let shot;
+  try {
+    shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 70 });
+  } finally {
+    await Promise.all([...byFrame.keys()].map((f) => send(tabId, { cmd: 'unmarks' }, f).catch(() => {})));
+  }
+  // downscale (keeps requests small and fast)
+  const bmp = await createImageBitmap(await (await fetch(shot)).blob());
+  const scale = Math.min(1, 1280 / bmp.width);
+  const canvas = new OffscreenCanvas(Math.round(bmp.width * scale), Math.round(bmp.height * scale));
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.6 });
+  return await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+}
+
 /** Snapshot of the tab, or a stand-in description when the page can't be scripted. */
+// Frames that are never part of a task (ads, trackers, social widgets, CAPTCHAs — WebPilot doesn't solve those).
+const SKIP_FRAME = /doubleclick|googlesyndication|googleadservices|adservice|amazon-adsystem|taboola|outbrain|criteo|adnxs|rubiconproject|pubmatic|facebook\.com\/plugins|platform\.twitter|recaptcha|hcaptcha|challenges\.cloudflare/i;
+const RANK = (e) => (e.kind === 'code-editor' ? -1 : e.popup ? 0 : e.offscreen ? 2 : 1);
+
+/** Snapshot every readable frame of the tab and merge them into one page description. */
+async function readFrames(tabId) {
+  let results;
+  try {
+    results = await withTimeout(chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: async () => {
+        if (!window.__webpilot) return null;
+        try { return await window.__webpilot.snapshot({ settle: true }); } catch (e) { return { error: String((e && e.message) || e) }; }
+      },
+    }), 16000, 'Reading the page took too long.');
+  } catch {
+    results = null;
+  }
+  const top = results?.find((r) => r.frameId === 0)?.result;
+  if (!top || top.error || !Array.isArray(top.elements)) {
+    // fallback: just the main frame through the message channel
+    frameOf.clear();
+    const snap = await send(tabId, { cmd: 'snapshot' }, 0);
+    for (const e of snap.elements) frameOf.set(e.id, 0);
+    return snap;
+  }
+  frameOf.clear();
+  for (const e of top.elements) frameOf.set(e.id, 0);
+  const subs = results.filter((r) => {
+    const f = r.result;
+    return r.frameId !== 0 && f && !f.error && f.elements?.length && !SKIP_FRAME.test(f.url || '') && !(f.frame && (f.frame.w < 60 || f.frame.h < 30));
+  }).slice(0, 8);
+  const offsets = await Promise.all(subs.map((r) => send(tabId, { cmd: 'frameOffset' }, r.frameId).catch(() => null)));
+  for (const [k, r] of subs.entries()) {
+    const f = r.result;
+    const off = offsets[k];
+    const frameOff = off && (off.y >= top.frame.h || off.x >= top.frame.w || off.y + f.frame.h <= 0 || off.x + f.frame.w <= 0);
+    for (const e of f.elements.slice(0, 150)) {
+      frameOf.set(e.id, r.frameId);
+      e.frame = true;
+      if (frameOff) e.offscreen = true;
+      top.elements.push(e);
+    }
+    if (f.errors?.length) top.errors = [...(top.errors || []), ...f.errors].slice(0, 8);
+    if (f.popupText && !top.popupText) top.popupText = f.popupText;
+    if (f.text && f.elements.some((e) => ['text', 'textarea', 'select', 'radio-group', 'checkbox', 'editable'].includes(e.kind))) {
+      top.text = `${top.text} [embedded frame: ${String(f.title || '').slice(0, 60)}] ${f.text.slice(0, 500)}`;
+    }
+  }
+  // keep the priority order across frames: popup → on screen → off screen
+  top.elements = top.elements.map((e, i) => [e, i]).sort((a, b) => RANK(a[0]) - RANK(b[0]) || a[1] - b[1]).map((x) => x[0]);
+  return top;
+}
+
 async function snapshotTab(tabId) {
-  const t = await chrome.tabs.get(tabId);
+  const t = await chrome.tabs.get(tabId).catch(() => null);
+  if (!t) throw new Error('The tab I was working in was closed.');
   const isPdf = /\.pdf(\?|#|$)/i.test(t.url || '');
   const blank = (text) => ({ url: t.url || '', title: t.title || '', headings: [], elements: [], errors: [], popupText: '', scroll: { atTop: true }, text, isPdf });
   if (!scriptable(t.url)) return blank('(This is a browser page that WebPilot cannot read. Use "navigate" to open a website.)');
@@ -373,31 +644,121 @@ async function snapshotTab(tabId) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       await inject(tabId);
-      const snap = await send(tabId, { cmd: 'snapshot' });
+      const snap = await readFrames(tabId);
       if (snap.elements.some((e) => e.kind === 'code-editor')) {
         try {
-          const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageEditor, args: ['get'] });
+          const ed = snap.elements.find((e) => e.kind === 'code-editor');
+          const [{ result } = {}] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [frameOf.get(ed.id) || 0] }, world: 'MAIN', func: pageEditor, args: ['get'] });
           for (const e of snap.elements) if (e.kind === 'code-editor' && result?.[e.id] != null) { e.value = result[e.id].slice(0, 6000); e.lines = result[e.id].split('\n').length; }
         } catch { /* DOM text is good enough */ }
       }
       return snap;
     } catch (e) {
-      if (/file URLs/.test(e.message)) throw e;
+      if (/file URLs|was closed/.test(e.message)) throw e;
       if (attempt === 3) return blank(`(WebPilot cannot read this page: ${e.message}. Try navigating somewhere else.)`);
-      await sleep(800);
+      await sleep(attempt * 700);
     }
   }
 }
 
 /** Wait for navigation / loading to finish after a page-changing action. */
 async function settle(tabId) {
-  await sleep(250);
-  for (let i = 0; i < 150; i++) {
+  await sleep(200);
+  let loaded = false;
+  for (let i = 0; i < 150; i++) { // up to ~15 s for slow sites
     const t = await chrome.tabs.get(tabId).catch(() => null);
     if (!t || t.status === 'complete') break;
+    loaded = true;
     await sleep(100);
   }
-  await sleep(350); // let single-page apps render
+  // the next snapshot waits for the DOM to stop changing, so only a short pause is needed here
+  await sleep(loaded ? 250 : 120);
+}
+
+// ---------- choose: autocomplete / custom dropdown in one reliable action ----------
+async function chooseOption(a, value, tabId) {
+  await inject(tabId);
+  const loc = await locateEl(tabId, a.target, 'Choosing');
+  const real = realInputOn && !loc.noReal && !loc.covered && (await cdp.attach(tabId).catch(() => false));
+  // option coordinates come from the field's frame — shift them into the top window like the field's
+  const clickAt = (x, y, id, isOption) => (real ? cdp.click(tabId, x + (isOption ? loc.off.x : 0), y + (isOption ? loc.off.y : 0))
+    : send(tabId, { cmd: 'execute', action: { type: 'click', target: id } }));
+  const want = String(value);
+  if (real) { await cursorMove(tabId, loc.x, loc.y, `Choosing “${short(want, 24)}”`); cursorOp(tabId, 'click'); }
+  if (loc.editable && !loc.readOnly) {
+    if (real) {
+      await cdp.click(tabId, loc.x, loc.y);
+      await cdp.selectAll(tabId);
+      await cdp.press(tabId, 'Backspace');
+      await cdp.typeText(tabId, want);
+    } else {
+      await send(tabId, { cmd: 'execute', action: { type: 'fill', target: a.target }, value: want });
+    }
+  } else {
+    await clickAt(loc.x, loc.y, a.target); // open the dropdown
+  }
+  // wait for the suggestion list
+  let found = null;
+  for (let i = 0; i < 16; i++) {
+    await sleep(i ? 180 : 250);
+    found = await send(tabId, { cmd: 'options', want, near: a.target }).catch(() => null);
+    if (found?.best) break;
+  }
+  if (!found?.best && loc.editable && real && want.length > 4) {
+    // some lists only match short input (e.g. station codes) — retry with the first word
+    const short = want.split(/[\s,-]+/)[0];
+    await cdp.selectAll(tabId); await cdp.press(tabId, 'Backspace'); await cdp.typeText(tabId, short);
+    for (let i = 0; i < 10 && !found?.best; i++) { await sleep(200); found = await send(tabId, { cmd: 'options', want, near: a.target }).catch(() => null); }
+  }
+  if (!found?.best && loc.editable && !loc.readOnly) {
+    // Free text (a new email address, a search query): there is nothing to pick — keep what was typed.
+    const typed = await send(tabId, { cmd: 'value', target: a.target }).catch(() => null);
+    if (typed != null && normVal(typed).includes(normVal(want).slice(0, 20))) {
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(want) && real) await cdp.press(tabId, 'Tab'); // turn an address into a recipient chip
+      return { detail: `typed “${want}” (no suggestion to pick — kept the typed text)` };
+    }
+  }
+  if (!found?.best) {
+    throw new Error(`No option matching “${want}” appeared${found?.options?.length ? `. Visible options: ${found.options.slice(0, 8).join(' | ')}` : ' (no suggestion list opened)'}.`);
+  }
+  if (real) { await cursorMove(tabId, found.best.x + loc.off.x, found.best.y + loc.off.y, `Pick “${short(found.best.text, 24)}”`); cursorOp(tabId, 'click'); }
+  await clickAt(found.best.x, found.best.y, found.best.id, true);
+  await sleep(300);
+  // Verify on a fresh read of the page (widgets often re-render the field after a pick).
+  let now = await send(tabId, { cmd: 'value', target: a.target }).catch(() => null);
+  if (!now) {
+    const fresh = await send(tabId, { cmd: 'snapshot' }).catch(() => null);
+    const key = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const head = key(found.best.text).split(' ').slice(0, 3).join(' ');
+    const hit = fresh?.elements.find((e) => ['text', 'button', 'select', 'editable'].includes(e.kind) && (key(e.value).includes(head) || key(e.label).includes(head)));
+    now = hit ? hit.value || hit.label : null;
+    if (!hit) throw new Error(`Clicked “${found.best.text}”, but the field doesn't show it — the pick may not have registered. Try choose again or click the option directly.`);
+  }
+  return { detail: `picked “${found.best.text}” — field shows “${String(now).slice(0, 50)}”` };
+}
+
+// ---------- popups that aren't part of the task get closed without asking the AI ----------
+const DISMISS_LABEL = /^(close( \(×\))?|×|✕|✖|x|no,? thanks|not now|later|maybe later|remind me later|skip|dismiss|got it|ok|okay|i understand|continue browsing|reject all|deny|block|don'?t allow)$/i;
+const PROMO_POPUP = /(log ?in|sign ?up|sign in|offer|discount|coupon|download (the |our )?app|notification|subscribe|newsletter|cookie|allow|install|rate us|feedback|advisory|welcome|what'?s new|new feature|update|aadhaar|ad\b)/i;
+function autoDismissPlan(snap, goal, tried) {
+  if (!snap.popupText) return null;
+  const wanted = /log ?in|sign ?in|sign ?up|register|account|otp/i.test(goal) && /log ?in|sign ?in|sign ?up|register|mobile number|password|user ?name/i.test(snap.popupText);
+  if (wanted) return null;
+  // A popup that asks a real question ("Do you want to continue?", Yes / No) is a decision for the AI, never auto-closed.
+  const asks = /do you want|are you sure|would you like|confirm|proceed\?|continue\?/i.test(snap.popupText) ||
+    snap.elements.some((e) => e.popup && e.kind === 'button' && /^(yes|no|confirm|proceed|continue|ok,? continue)$/i.test(e.label.trim()));
+  if (asks) return null;
+  if (snap.elements.some((e) => e.popup && ['text', 'textarea', 'editable', 'select'].includes(e.kind))) return null; // a form the task may need
+  const key = 'dismiss:' + snap.popupText.slice(0, 80);
+  if (tried.has(key)) return null; // already tried once — let the AI handle it
+  const popupBtns = snap.elements.filter((e) => e.popup && (e.kind === 'button' || e.kind === 'link'));
+  // "Select your preferred language" popups (IRCTC & co.) are dismissed by choosing English.
+  const lang = /preferred language|select (your )?language|choose (your )?language|भाषा/i.test(snap.popupText) && popupBtns.find((e) => /^english$/i.test(e.label.trim()));
+  const btn = lang || popupBtns.find((e) => DISMISS_LABEL.test(e.label.trim()));
+  if (!btn && !PROMO_POPUP.test(snap.popupText)) return null;
+  tried.add(key);
+  const actions = btn ? [{ type: 'click', target: btn.id, description: `Close the popup (“${btn.label}”)` }] : [{ type: 'press', key: 'Escape', description: 'Press Escape to close the popup' }];
+  return { message: '', status: 'in_progress', missing: [], planStep: null, revisedSteps: null, actions, auto: true };
 }
 
 // ---------- downloads ----------
@@ -459,8 +820,18 @@ async function perform(a, value, tabId) {
     case 'wait': await sleep(a.seconds * 1000); return { detail: `waited ${a.seconds}s` };
     case 'download': return downloadFile(a, tabId);
     case 'set_code': return writeCode(tabId, a.target, value);
+    case 'choose': return chooseOption(a, value, tabId);
     default:
       await inject(tabId);
+      if (realInputOn && ['click', 'fill', 'check', 'uncheck', 'press'].includes(a.type)) {
+        try {
+          const r = await realPerform(a, value, tabId);
+          if (r) return r;
+        } catch (e) {
+          if (/covered|never types|Password fields|read-only|no longer on the page/.test(e.message)) throw e;
+          // debugger hiccup → fall through to simulated input
+        }
+      }
       try {
         return await send(tabId, { cmd: 'execute', action: a, value, opts: { allowPassword: a.profileKey === GENERATED_PASSWORD_KEY } });
       } catch (e) {
@@ -497,6 +868,7 @@ function describeStep(a, el) {
     case 'scroll': return `scrolled ${a.direction}`;
     case 'wait': return `waited ${a.seconds}s`;
     case 'media': return `${a.op === 'pause' ? 'paused' : 'played'} media${a.target ? ` [${a.target}]` : ''}`;
+    case 'choose': return `chose "${a.profileKey ? 'profile.' + a.profileKey : a.value}" in${label} [${a.target}]`;
     case 'set_code': return `wrote ${String(a.value || '').split('\n').length} lines of code into the editor [${a.target}]`;
     case 'download': return `downloaded${label || (a.url ? ` ${a.url.slice(0, 80)}` : '')}${a.target ? ` [${a.target}]` : ''}`;
     default: return a.type;
@@ -509,13 +881,13 @@ function addTaskPlanCard(tp) {
   logEl().appendChild(card);
   let current = 1;
   const render = () => {
-    card.innerHTML = `<div class="tp-head">🧭 Plan</div>
+    card.innerHTML = `<div class="tp-head">Plan</div>
       <div class="tp-goal">${esc(tp.goal)}</div>
       <ol>${tp.steps.map((st, i) => {
         const n = i + 1, cls = n < current ? 'done' : n === current ? 'now' : '';
-        return `<li class="${cls}"><span class="ic">${n < current ? '✅' : n === current ? '▶' : n}</span><span>${esc(st)}</span></li>`;
+        return `<li class="${cls}"><span class="ic">${n < current ? icon('check', 12) : n}</span><span>${esc(st)}</span></li>`;
       }).join('')}</ol>
-      ${tp.success ? `<div class="tp-done">🎯 Done when: ${esc(tp.success)}</div>` : ''}`;
+      ${tp.success ? `<div class="tp-done"><span>Done when</span> ${esc(tp.success)}</div>` : ''}`;
   };
   render();
   scrollLog();
@@ -546,7 +918,7 @@ async function checksPass(checks, snap, tabId, downloads) {
     switch (c.type) {
       case 'media_playing': return sn.elements.some((e) => e.kind === 'media' && e.playing);
       case 'download_complete': return downloads.some((d) => d.state === 'complete');
-      case 'text_visible': return [sn.text, sn.title, sn.popupText, ...(sn.headings || [])].join(' ').toLowerCase().includes(c.text.toLowerCase());
+      case 'text_visible': return [sn.text, sn.title, sn.popupText, ...(sn.headings || []), ...(sn.notices || [])].join(' ').toLowerCase().includes(c.text.toLowerCase());
       case 'url_contains': return (sn.url || '').toLowerCase().includes(c.text.toLowerCase());
       default: return false;
     }
@@ -593,7 +965,9 @@ function setRunning(on) {
   $('#run').hidden = on;
   $('#stop').hidden = !on;
   $('#task').disabled = on;
-  updateStatus(on ? 'Working…' : null);
+  document.body.classList.toggle('running', on);
+  if (on) setActivity('busy', 'Starting');
+  updateStatus();
 }
 
 async function runTask(instruction, mode) {
@@ -609,7 +983,16 @@ async function runTask(instruction, mode) {
   setRunning(true);
   stopRequested = false;
   const modeName = { full: 'Full Auto', review: 'Review', step: 'Step-by-step' }[mode];
-  addMsg('system', `Mode: ${modeName} · ${useAI ? `${PROVIDERS[providerOf(settings)].name.split(' ')[0]} agent` : 'offline matcher (add a free API key in Settings for the full agent)'}`);
+  realInputOn = settings.realInput !== false;
+  realInputWarned = false;
+  const useVision = useAI && settings.vision !== false;
+  if (useVision) {
+    visionModelsFor(settings).then((v) => {
+      const any = Object.values(v).some((l) => l.length) || !!(settings.keys?.gemini || '').trim();
+      if (!any) addMsg('system', 'None of your AI keys has an image-capable model, so WebPilot can’t see the screen. Add a free OpenRouter key (google/gemma-4-31b-it:free) or a free Gemini key in Settings.');
+    }).catch(() => {});
+  }
+  addMsg('system', `Mode: ${modeName}${realInputOn ? ' · real clicks' : ''}${useVision ? ' · vision' : ''} · ${useAI ? `${PROVIDERS[providerOf(settings)].name.split(' ')[0]} agent` : 'offline matcher (add a free API key in Settings for the full agent)'}`);
 
   const prof = effectiveProfile(profile);
   const ctx = { askKeys, goal: instruction, codeEditor: false };
@@ -637,9 +1020,10 @@ async function runTask(instruction, mode) {
   try {
     // ---- 1. understand the command and plan before acting ----
     if (useAI) {
-      updateStatus('Planning…');
+      setActivity('busy', 'Reading page');
       const first = await snapshotTab(tabId);
-      nextSnap = first;
+      setActivity('busy', 'Planning task');
+      // (no snapshot reuse: the page may change while the plan is being made, e.g. a popup appears)
       try {
         taskPlan = await makeTaskPlan({ instruction, snapshot: first, profile: prof, settings, onNotice: noticeLine() });
         planCard = addTaskPlanCard(taskPlan);
@@ -658,6 +1042,7 @@ async function runTask(instruction, mode) {
         budget = MAX_STEPS;
       }
 
+      if (!nextSnap) setActivity('busy', 'Reading page');
       let snap = nextSnap || await snapshotTab(tabId);
       nextSnap = null;
       if (taskPlan?.checks?.length && counts.done > 0) {
@@ -684,11 +1069,15 @@ async function runTask(instruction, mode) {
         plan = { message: `Opening ${hostOf(pendingStart)}…`, status: 'in_progress', missing: [], planStep: 1, revisedSteps: null,
           actions: [{ type: 'navigate', url: pendingStart, description: `Open ${hostOf(pendingStart)}` }] };
         pendingStart = null;
+      } else if ((plan = autoDismissPlan(snap, instruction, tried))) {
+        addMsg('system', `Closing a popup: “${snap.popupText.slice(0, 70)}…”`);
+        steps.push(`(WebPilot auto-closed a popup: "${snap.popupText.slice(0, 80)}")`);
       } else if (useAI) {
-        updateStatus('Thinking…');
+        setActivity('busy', useVision ? 'Analyzing page' : 'Thinking');
         try {
+          const image = useVision && scriptable(snap.url) ? await withTimeout(captureScreen(tabId, snap), 8000, "screenshot timed out").catch(() => null) : null;
           plan = await planWithAI({
-            instruction, snapshot: snap, profile: prof, history: steps, step, settings,
+            instruction, snapshot: snap, profile: prof, history: steps, step, settings, image,
             taskPlan, current, downloads: downloads.map((d) => `"${d.file}" (${d.mime || 'unknown type'}, ${d.state})`),
             onNotice: noticeLine(),
           });
@@ -709,7 +1098,7 @@ async function runTask(instruction, mode) {
           } else if (aiFail <= 3) {
             noticeLine()(`All AI models are busy — retrying in ${aiFail * 5}s…`);
             await sleep(aiFail * 5000);
-            nextSnap = snap;
+            nextSnap = null; // re-read the page: it may have changed meanwhile
             continue;
           } else {
             const r = await askUser(`I can't reach any AI model right now (${e.message}). Add a key for another provider in Settings, or retry.`, { continueLabel: 'Retry' });
@@ -742,7 +1131,7 @@ async function runTask(instruction, mode) {
         emptyStreak++;
         if (emptyStreak === 1) {
           steps.push('(your reply had no valid actions — return at least one action using ids copied from ELEMENTS, or status "achieved" with evidence)');
-          nextSnap = snap;
+          nextSnap = null; // re-read the page: it may have changed meanwhile
           continue;
         }
         const move = fallbackPlan({ instruction, snapshot: snap, tried });
@@ -772,7 +1161,7 @@ async function runTask(instruction, mode) {
           plan = move;
           addMsg('system', `Trying a different approach: ${move.message}`);
         } else if (repeatStreak < 4) {
-          nextSnap = snap;
+          nextSnap = null; // re-read the page: it may have changed meanwhile
           continue;
         } else {
           if (!(await stuck(`I keep trying the same thing (“${plan.actions[0].description}”) and nothing changes.`))) break;
@@ -781,7 +1170,7 @@ async function runTask(instruction, mode) {
       }
 
       // ---- execute ----
-      const card = addPlanCard(`Step ${step}`, plan.actions);
+      const card = addPlanCard(`Step ${step}${plan.sawImage ? ' · vision' : ''}${plan.auto ? ' · auto' : ''}`, plan.actions);
       let pageChanged = false, approveRest = false;
 
       for (let i = 0; i < plan.actions.length; i++) {
@@ -803,14 +1192,14 @@ async function runTask(instruction, mode) {
         if (a.profileKey === GENERATED_PASSWORD_KEY) {
           if (!password) { password = makePassword(); passwordSite = host; showPasswordCard(password, host); }
           value = password;
-        } else if (a.type === 'fill' || a.type === 'select') {
+        } else if (a.type === 'fill' || a.type === 'select' || a.type === 'choose') {
           value = (a.profileKey && prof[a.profileKey]) || a.value;
         } else if (a.type === 'navigate') {
           value = a.url;
         } else if (a.type === 'set_code') {
           value = a.value;
         }
-        if ((a.type === 'fill' || a.type === 'select') && (value == null || value === '')) {
+        if ((a.type === 'fill' || a.type === 'select' || a.type === 'choose') && (value == null || value === '')) {
           card.set(i, 'skipped', 'no value in your profile');
           missing.add(el?.label || a.profileKey);
           steps.push(`SKIPPED ${describeStep(a, el)}: profile has no "${a.profileKey}" — ask the user if it's required`);
@@ -839,6 +1228,7 @@ async function runTask(instruction, mode) {
         }
 
         card.set(i, 'running');
+        setActivity('busy', activityFor(a, el));
         const changing = isPageChanging(a);
         const stopWatching = changing ? watchNewTab(tabId) : null;
         const stopDl = a.type === 'click' || a.type === 'press' ? watchDownloads() : null;
@@ -850,6 +1240,7 @@ async function runTask(instruction, mode) {
 
           if (changing || a.type === 'scroll' || a.type === 'wait' || a.type === 'media') {
             if (changing) {
+              setActivity('busy', 'Waiting for page');
               await settle(tabId);
               for (const d of stopDl?.() || []) {
                 const info = await waitForDownload(d.id, 30000);
@@ -916,9 +1307,13 @@ async function runTask(instruction, mode) {
 
   if (stopRequested && !['stopped', 'step-limit'].includes(status)) status = 'stopped';
   const done = downloads.filter((d) => d.state !== 'interrupted');
-  if (done.length) note = `${note ? note + '\n' : ''}📥 Saved to your Downloads folder: ${done.map((d) => d.file).join(', ')}`;
+  if (done.length) note = `${note ? note + '\n' : ''}Saved to your Downloads folder: ${done.map((d) => d.file).join(', ')}`;
   addSummary({ status, counts, missing: [...missing].filter(Boolean), note, downloads: done });
+  await cursorOp(tabId, 'hide');
+  await cdp.detachAll(); // removes Chrome's "debugging this browser" bar
   setRunning(false);
+  setActivity(['achieved', 'completed'].includes(status) ? 'done' : 'warn',
+    { achieved: 'Task completed', completed: 'Task completed', stopped: 'Stopped', 'needs-help': 'Needs your help', blocked: 'Can’t be done here', 'step-limit': 'Paused', error: 'Error' }[status] || 'Finished');
   stopRequested = false;
 
   history.unshift({
@@ -949,7 +1344,7 @@ function renderProfileForm() {
     form.insertAdjacentHTML('beforeend', `
       <div class="pfield">
         <label class="field"><span>${esc(f.label)}</span>${input}</label>
-        <label class="lock" title="Ask before using this field"><input type="checkbox" data-ask="${f.key}" />🔒</label>
+        <label class="lock" title="Ask before using this field"><input type="checkbox" data-ask="${f.key}" />${icon('lock')}</label>
       </div>`);
   }
   fillProfileForm();
@@ -986,7 +1381,7 @@ async function saveProfile() {
   profile = readProfileForm();
   askKeys = $$('#profileForm [data-ask]').filter((c) => c.checked).map((c) => c.dataset.ask);
   await Promise.all([store.set('profile', profile), store.set('askKeys', askKeys)]);
-  flash('#profileSaved', '✓ Saved');
+  flash('#profileSaved', 'Saved');
 }
 
 async function clearProfile() {
@@ -1000,7 +1395,7 @@ async function clearProfile() {
 async function copyImportPrompt() {
   await navigator.clipboard.writeText(IMPORT_PROMPT);
   const b = $('#copyPrompt');
-  b.textContent = '✓ Copied';
+  b.textContent = 'Copied';
   setTimeout(() => { b.textContent = 'Copy prompt'; }, 1800);
 }
 
@@ -1036,7 +1431,7 @@ function previewImport() {
     if (Object.keys(custom).length) profile.custom = custom;
     await store.set('profile', profile);
     fillProfileForm();
-    box.innerHTML = `<p class="saved">✓ Imported ${picked.length} field${picked.length === 1 ? '' : 's'}. Review them below.</p>`;
+    box.innerHTML = `<p class="saved">Imported ${picked.length} field${picked.length === 1 ? '' : 's'}. Review them below.</p>`;
     $('#importText').value = '';
   };
 }
@@ -1050,18 +1445,18 @@ async function saveWorkflow() {
   workflows.unshift({ id: crypto.randomUUID(), name: instruction.slice(0, 70), instruction, mode: currentMode(), created: Date.now() });
   await store.set('workflows', workflows);
   renderWorkflows();
-  addMsg('system', '☆ Saved to Workflows');
+  addMsg('system', 'Saved to workflows');
 }
 
 function renderWorkflows() {
   const list = $('#wfList');
-  if (!workflows.length) { list.innerHTML = '<div class="empty">No saved workflows yet. Type a task and click “☆ Save as workflow”.</div>'; return; }
+  if (!workflows.length) { list.innerHTML = '<div class="empty">No saved workflows yet. Type a task and choose “Save as workflow”.</div>'; return; }
   list.innerHTML = workflows.map((w) => `
     <div class="item">
       <div class="body"><div class="name" title="${esc(w.instruction)}">${esc(w.name)}</div>
         <div class="sub">${esc({ full: 'Full Auto', review: 'Review', step: 'Step-by-step' }[w.mode])}</div></div>
-      <button class="small" data-run="${w.id}">▶ Run</button>
-      <button class="link" data-del="${w.id}" title="Delete">✕</button>
+      <button class="small" data-run="${w.id}">${icon('play', 12)} Run</button>
+      <button class="link icon-btn" data-del="${w.id}" title="Delete">${icon('x')}</button>
     </div>`).join('');
   list.querySelectorAll('[data-run]').forEach((b) => b.addEventListener('click', () => {
     const w = workflows.find((x) => x.id === b.dataset.run);
@@ -1084,13 +1479,13 @@ function renderHistory() {
     <div class="item">
       <div class="body"><div class="name" title="${esc(h.instruction)}">${esc(h.instruction)}</div>
         <div class="sub">${esc(new Date(h.time).toLocaleString())} · ${esc(h.title || h.url)} · ${h.counts.done} actions</div></div>
-      ${h.password ? `<button class="pw" data-pw="${esc(h.password.value)}" title="Copy the password created for ${esc(h.password.site)}">🔑</button>` : ''}
+      ${h.password ? `<button class="pw" data-pw="${esc(h.password.value)}" title="Copy the password created for ${esc(h.password.site)}">${icon('key')}</button>` : ''}
       <span class="badge ${esc(h.status)}">${esc(h.status)}</span>
     </div>`).join('');
   list.querySelectorAll('[data-pw]').forEach((b) => b.addEventListener('click', async () => {
     await navigator.clipboard.writeText(b.dataset.pw);
-    b.textContent = '✓';
-    setTimeout(() => { b.textContent = '🔑'; }, 1500);
+    b.innerHTML = icon('check');
+    setTimeout(() => { b.innerHTML = icon('key'); }, 1500);
   }));
 }
 
@@ -1104,6 +1499,9 @@ function renderSettings() {
   draft = structuredClone(settings);
   $('#provider').value = providerOf(draft);
   $('#defaultMode').value = draft.mode;
+  $('#realInput').checked = draft.realInput !== false;
+  $('#vision').checked = draft.vision !== false;
+  $('#theme').value = draft.theme || 'system';
   renderProviderFields();
 }
 
@@ -1125,6 +1523,9 @@ function readProviderFields() {
   draft.keys[id] = $('#apiKey').value.trim();
   draft.models[id] = $('#model').value.trim();
   draft.mode = $('#defaultMode').value;
+  draft.realInput = $('#realInput').checked;
+  draft.vision = $('#vision').checked;
+  draft.theme = $('#theme').value;
 }
 
 function onProviderChange() {
@@ -1140,7 +1541,7 @@ async function saveSettings() {
   await store.set('settings', settings);
   lastModelNotice = null;
   updateStatus();
-  flash('#settingsSaved', '✓ Saved');
+  flash('#settingsSaved', 'Saved');
 }
 
 async function testKey() {
@@ -1156,8 +1557,15 @@ async function testKey() {
     const used = await testAI({ ...s, keys: { [providerOf(s)]: activeKey(s) } }); // test only this provider
     out.style.color = 'var(--ok)';
     out.textContent = used === model
-      ? `✓ Connected to ${p.name} · ${used}. Click Save to use it.`
-      : `✓ Connected. ${model} is busy or unavailable, so WebPilot will automatically use ${used}. Click Save to use it.`;
+      ? `Connected to ${p.name} · ${used}. Click Save to use it.`
+      : `Connected. ${model} is busy or unavailable, so WebPilot will automatically use ${used}. Click Save to use it.`;
+    try {
+      const v = (await visionModelsFor({ ...s, keys: { [providerOf(s)]: activeKey(s) } }))[providerOf(s)] || [];
+      const sees = v.length || providerOf(s) === 'gemini';
+      out.textContent += sees
+        ? ` Can see screenshots${v.length ? ` with ${v.slice(0, 2).join(', ')}` : ''}.`
+        : ' This provider has no image-capable model right now — add a free OpenRouter or Gemini key so WebPilot can see the screen.';
+    } catch {}
   } catch (e) {
     out.style.color = 'var(--danger)';
     out.textContent = `Connection failed: ${e.message}`;

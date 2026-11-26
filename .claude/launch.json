@@ -4,8 +4,8 @@
     {
       "name": "demo",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "5500", "--directory", "C:/Users/Yash Raj/Desktop/WebPilot"],
-      "port": 5500
+      "runtimeArgs": ["-m", "http.server", "5501", "--directory", "C:/Users/Yash Raj/Desktop/WebPilot"],
+      "port": 5501
     }
   ]
 }

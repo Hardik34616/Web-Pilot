@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RailGo — Book Train Tickets (demo)</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px/1.45 system-ui, "Segoe UI", sans-serif; background: #eef2f7; color: #1e293b; }
+    .top { background: #1d3557; color: #fff; display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; }
+    .brand { font-weight: 800; font-size: 20px; letter-spacing: .5px; }
+    .navlink { cursor: pointer; font-weight: 700; padding: 6px 12px; border: 1px solid #fff6; border-radius: 6px; }
+    main { max-width: 860px; margin: 22px auto; padding: 0 16px; }
+    .panel { background: #fff; border-radius: 12px; padding: 18px; box-shadow: 0 4px 18px #0f172a14; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-items: end; }
+    .fld { position: relative; }
+    .cap { font-size: 12px; font-weight: 700; color: #475569; margin-bottom: 4px; }
+    .inp { width: 100%; padding: 9px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; background: #fff; }
+    .dd { position: absolute; z-index: 5; left: 0; right: 0; top: 100%; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; margin-top: 2px; max-height: 180px; overflow: auto; }
+    .opt { padding: 7px 10px; cursor: pointer; }
+    .opt:hover { background: #e0f2fe; }
+    .btn { cursor: pointer; background: #f97316; color: #fff; font-weight: 800; text-align: center; padding: 10px 14px; border-radius: 8px; user-select: none; }
+    .muted { color: #64748b; }
+    .cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; padding: 6px; }
+    .cal div { cursor: pointer; text-align: center; padding: 5px 0; border-radius: 4px; }
+    .cal div:hover { background: #fed7aa; }
+    .train { display: flex; justify-content: space-between; align-items: center; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+    .modal { position: fixed; inset: 0; background: #0f172a99; display: grid; place-items: center; z-index: 50; }
+    .modal .box { background: #fff; width: 340px; border-radius: 12px; padding: 20px; }
+    .captcha { font: 700 22px/1 monospace; letter-spacing: 6px; background: repeating-linear-gradient(45deg, #fde68a, #fde68a 6px, #fcd34d 6px, #fcd34d 12px); padding: 8px 12px; border-radius: 6px; display: inline-block; text-decoration: line-through; }
+    .err { color: #dc2626; font-size: 13px; min-height: 18px; }
+    [hidden] { display: none !important; }
+    @media (max-width: 700px) { .grid { grid-template-columns: 1fr 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="top"><div class="brand">🚆 RailGo <span style="font-weight:400;font-size:12px;opacity:.8">(demo)</span></div><div class="navlink" id="loginLink">LOGIN</div></div>
+
+  <main>
+    <!-- 1. search -->
+    <section class="panel" id="search">
+      <div style="font-weight:800;font-size:17px;margin-bottom:12px">Book Ticket</div>
+      <div class="grid">
+        <div class="fld"><div class="cap">From</div><input class="inp" id="from" autocomplete="off" /></div>
+        <div class="fld"><div class="cap">To</div><input class="inp" id="to" autocomplete="off" /></div>
+        <div class="fld"><div class="cap">Journey Date</div><input class="inp" id="date" readonly placeholder="DD/MM/YYYY" /><div class="dd" id="cal" hidden></div></div>
+        <div class="fld"><div class="cap">Class</div><div class="inp" id="cls" style="cursor:pointer">All Classes ▾</div><div class="dd" id="clsDd" hidden></div></div>
+      </div>
+      <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center"><span class="err" id="searchErr"></span><div class="btn" id="searchBtn" style="width:160px">Search</div></div>
+    </section>
+
+    <!-- 2. results -->
+    <section class="panel" id="results" hidden></section>
+
+    <!-- 3. passengers -->
+    <section class="panel" id="pax" hidden>
+      <div style="font-weight:800;font-size:17px;margin-bottom:12px">Passenger Details</div>
+      <div class="grid" style="grid-template-columns: 2fr 1fr 1fr">
+        <div><div class="cap">Passenger Name</div><input class="inp" id="pname" /></div>
+        <div><div class="cap">Age</div><input class="inp" id="page" inputmode="numeric" /></div>
+        <div><div class="cap">Gender</div><select class="inp" id="pgender"><option value="">Select</option><option>Male</option><option>Female</option><option>Transgender</option></select></div>
+      </div>
+      <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center"><span class="err" id="paxErr"></span><div class="btn" id="paxBtn" style="width:160px">Continue</div></div>
+    </section>
+
+    <!-- 4. review -->
+    <section class="panel" id="review" hidden></section>
+  </main>
+
+  <!-- login modal -->
+  <div class="modal" id="login" hidden>
+    <div class="box">
+      <div style="display:flex;justify-content:space-between"><b style="font-size:17px">Login</b><span id="closeLogin" style="cursor:pointer;font-size:18px">✕</span></div>
+      <div style="margin-top:12px"><div class="cap">User Name</div><input class="inp" id="user" /></div>
+      <div style="margin-top:10px"><div class="cap">Password</div><input class="inp" id="pass" type="password" /></div>
+      <div style="margin-top:10px"><div class="captcha" id="captchaImg">K7Q2X</div></div>
+      <div style="margin-top:8px"><input class="inp" id="captcha" placeholder="Enter Captcha" /></div>
+      <div class="err" id="loginErr"></div>
+      <div class="btn" id="signIn">SIGN IN</div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const STATIONS = ['NEW DELHI - NDLS', 'MUMBAI CENTRAL - MMCT', 'CHENNAI CENTRAL - MAS', 'HOWRAH JN - HWH', 'PUNE JN - PUNE', 'BENGALURU - SBC', 'HYDERABAD - HYB', 'AGRA CANTT - AGC'];
+    let loggedIn = false, chosenTrain = null, cls = '';
+
+    // login
+    $('loginLink').onclick = () => { if (!loggedIn) $('login').hidden = false; };
+    $('closeLogin').onclick = () => ($('login').hidden = true);
+    $('signIn').onclick = () => {
+      if (!$('user').value.trim() || !$('pass').value) return ($('loginErr').textContent = 'Please enter user name and password.');
+      if ($('captcha').value.trim().toUpperCase() !== 'K7Q2X') return ($('loginErr').textContent = 'Invalid Captcha.');
+      loggedIn = true; $('login').hidden = true; $('loginLink').textContent = 'Welcome, ' + $('user').value.trim();
+    };
+
+    // station autocomplete, IRCTC/PrimeNG style: the list is attached to <body>, positioned under the field,
+    // and it CLOSES when the page scrolls (so clicking it must not scroll the page).
+    function auto(inp) {
+      inp.setAttribute('aria-autocomplete', 'list');
+      inp.parentElement.classList.add('p-autocomplete');
+      const ul = document.createElement('ul');
+      ul.setAttribute('role', 'listbox');
+      Object.assign(ul.style, { position: 'fixed', zIndex: 20, listStyle: 'none', margin: 0, padding: '4px 0', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '8px', boxShadow: '0 6px 20px #0002', display: 'none', maxHeight: '200px', overflow: 'auto' });
+      document.body.appendChild(ul);
+      const close = () => (ul.style.display = 'none');
+      inp.addEventListener('input', () => {
+        const q = inp.value.trim().toUpperCase();
+        const hits = q ? STATIONS.filter((s) => s.includes(q)) : [];
+        ul.innerHTML = hits.map((s) => `<li role="option" class="opt">${s}</li>`).join('');
+        const r = inp.getBoundingClientRect();
+        Object.assign(ul.style, { left: r.left + 'px', top: r.bottom + 2 + 'px', width: r.width + 'px', display: hits.length ? 'block' : 'none' });
+      });
+      ul.addEventListener('mousedown', (e) => e.preventDefault()); // keep focus in the input, like PrimeNG
+      ul.addEventListener('click', (e) => { const o = e.target.closest('[role=option]'); if (o) { inp.value = o.textContent; close(); } });
+      window.addEventListener('scroll', close, true);
+    }
+    auto($('from')); auto($('to'));
+
+    // a travel advisory popup on load whose only close control is an icon (no text)
+    setTimeout(() => {
+      const m = document.createElement('div');
+      m.className = 'modal'; m.id = 'advisory';
+      m.innerHTML = `<div class="box"><div style="display:flex;justify-content:space-between;align-items:center"><b>Travel Advisory</b>
+        <span class="close-icon" style="cursor:pointer;display:inline-flex"><svg width="18" height="18" viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19" stroke="#334155" stroke-width="2.5"/></svg></span></div>
+        <p class="muted">Passengers are advised to check the latest train running status before starting the journey.</p></div>`;
+      document.body.appendChild(m);
+      m.querySelector('.close-icon').onclick = () => m.remove();
+    }, 300);
+
+    // calendar (read-only input)
+    $('date').onclick = () => {
+      const cal = $('cal'); const base = new Date(); base.setDate(1); base.setMonth(base.getMonth() + 1);
+      const mm = String(base.getMonth() + 1).padStart(2, '0'), yy = base.getFullYear();
+      cal.innerHTML = `<div style="padding:6px 8px;font-weight:700">${base.toLocaleString('en', { month: 'long' })} ${yy}</div><div class="cal">${Array.from({ length: 28 }, (_, i) => `<div data-d="${String(i + 1).padStart(2, '0')}/${mm}/${yy}">${i + 1}</div>`).join('')}</div>`;
+      cal.hidden = false;
+    };
+    $('cal').addEventListener('click', (e) => { const d = e.target.closest('[data-d]'); if (d) { $('date').value = d.dataset.d; $('cal').hidden = true; } });
+
+    // class dropdown (not a <select>)
+    $('cls').onclick = () => { $('clsDd').innerHTML = ['Sleeper (SL)', 'AC 3 Tier (3A)', 'AC 2 Tier (2A)', 'AC First Class (1A)'].map((c) => `<div class="opt">${c}</div>`).join(''); $('clsDd').hidden = false; };
+    $('clsDd').addEventListener('click', (e) => { const o = e.target.closest('.opt'); if (o) { cls = o.textContent; $('cls').textContent = cls + ' ▾'; $('clsDd').hidden = true; } });
+
+    // search → results
+    $('searchBtn').onclick = () => {
+      if (!loggedIn) { $('login').hidden = false; return; }
+      if (!$('from').value || !$('to').value || !$('date').value) return ($('searchErr').textContent = 'Please choose From, To and Journey Date.');
+      $('searchErr').textContent = '';
+      const trains = [['12951', 'MUMBAI RAJDHANI', '16:55', '08:35', '₹2,395'], ['12953', 'AUG KRANTI RAJ', '17:40', '10:50', '₹2,180'], ['22209', 'MMCT DURONTO', '23:00', '15:55', '₹2,045']];
+      $('results').hidden = false;
+      $('results').innerHTML = `<div style="font-weight:800;font-size:17px;margin-bottom:10px">${trains.length} trains · ${$('from').value} → ${$('to').value} · ${$('date').value} · ${cls || 'All Classes'}</div>` +
+        trains.map((t) => `<div class="train"><div><b>${t[1]} (${t[0]})</b><div class="muted">${t[2]} → ${t[3]} · ${cls || 'AC 3 Tier (3A)'} · AVAILABLE</div></div><div><span style="margin-right:12px;font-weight:700">${t[4]}</span><span class="btn book" data-t="${t[1]} (${t[0]}) ${t[4]}" style="display:inline-block">Book Now</span></div></div>`).join('');
+    };
+    $('results').addEventListener('click', (e) => { const b = e.target.closest('.book'); if (b) { chosenTrain = b.dataset.t; $('pax').hidden = false; $('pax').scrollIntoView({ behavior: 'smooth' }); } });
+
+    // passengers → review
+    $('paxBtn').onclick = () => {
+      if (!$('pname').value.trim() || !$('page').value.trim() || !$('pgender').value) return ($('paxErr').textContent = 'Please fill passenger name, age and gender.');
+      $('paxErr').textContent = '';
+      $('review').hidden = false;
+      $('review').innerHTML = `<div style="font-weight:800;font-size:17px;margin-bottom:8px">Review Journey</div><div>${chosenTrain}</div><div class="muted">${$('from').value} → ${$('to').value} · ${$('date').value}</div><div style="margin:8px 0">Passenger: ${$('pname').value}, ${$('page').value}, ${$('pgender').value}</div><div class="btn" id="pay" style="width:240px">Proceed to Pay</div><div id="paid" class="muted"></div>`;
+      $('pay').onclick = () => ($('paid').textContent = 'Payment gateway would open here (demo — no payment taken).');
+      $('review').scrollIntoView({ behavior: 'smooth' });
+    };
+  </script>
+</body>
+</html>

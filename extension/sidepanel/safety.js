@@ -12,9 +12,9 @@ const CRITICAL = /\b(pay|payment|purchase|buy|checkout|place order|order now|del
 const FINAL = /\b(submit|register|sign ?up|create (an |my )?account|join|apply|finish|complete|confirm|send|book|enrol|enroll|subscribe)\b/i;
 const NAV_SAFE = /\b(next|continue|back|previous|prev|proceed to step|save (and|&) continue|go to step)\b/i;
 const TERMS = /\b(terms|agree|accept|consent|privacy|policy|conditions|declare|declaration)\b/i;
-const SECRET = /\b(otp|one.time|verification code|cvv|cvc|card number|credit card|debit card|atm pin|upi pin|security code|aadhaar|ssn|pan number|account number|routing|ifsc)\b/i;
+const SECRET = /\b(captcha|otp|one.time|verification code|cvv|cvc|card number|credit card|debit card|atm pin|upi pin|security code|aadhaar|ssn|pan number|account number|routing|ifsc)\b/i;
 
-const GOAL_SUBMITS = /\b(solve|submit|sign ?up|register|create (an |a |my )?account|make (an |a )?account|apply|enrol|enroll|book|send|complete (the |my )?(registration|application|form)|join)\b/i;
+const GOAL_SUBMITS = /\b(solve|submit|sign ?up|register|create (an |a |my )?account|make (an |a )?account|apply|enrol|enroll|book|send|complete (the |my )?(registration|application|form|booking|order|process)|join|(till|until|up ?to|upto|to) (the )?(last|final|end|payment) (step|page|stage)?|all the way|end.to.end|finish (it|everything|the process))\b/i;
 const GOAL_HOLDS = /\b(don'?t|do not|without|before) submit|prepare|ready (for|to) submi|review before/i;
 
 /** Does the user's goal itself authorize final submit / sign-up clicks? */
@@ -29,8 +29,8 @@ export function classify(action, el, { askKeys = [], goal = '', codeEditor = fal
   const label = el?.label || '';
   const text = `${label} ${action.description || ''}`;
 
-  if (action.type === 'fill' || action.type === 'select') {
-    if (isSecretField(el)) return { level: 'blocked', reason: 'WebPilot never types OTPs, card, bank or ID numbers — it will ask you instead' };
+  if (action.type === 'fill' || action.type === 'select' || action.type === 'choose') {
+    if (isSecretField(el)) return { level: 'blocked', reason: 'WebPilot never types CAPTCHAs, OTPs, card, bank or ID numbers — ask the user (ask_user) instead' };
     if (el?.inputType === 'password') {
       if (action.profileKey !== GENERATED_PASSWORD_KEY) return { level: 'blocked', reason: 'only a WebPilot-generated password can be typed into password fields' };
       return { level: 'important', reason: 'fills a new secure password (shown to you)' };

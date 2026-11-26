@@ -4,7 +4,7 @@ const DEFAULTS = {
   profile: {},           // { fullName, email, ..., custom: { key: value } }
   askKeys: ['phone', 'dob', 'address'], // profile fields that need approval before use
   // provider: 'groq' | 'openrouter' | 'gemini'; keys/models are stored per provider
-  settings: { provider: 'groq', keys: {}, models: {}, mode: 'review' },
+  settings: { provider: 'groq', keys: {}, models: {}, mode: 'review', realInput: true, vision: true, theme: 'system' },
   workflows: [],         // [{ id, name, instruction, mode, created }]
   history: [],           // [{ time, url, title, instruction, mode, status, counts }]
 };

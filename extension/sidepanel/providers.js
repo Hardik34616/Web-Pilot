@@ -17,28 +17,6 @@ export const PROVIDERS = {
     exclude: /(whisper|tts|guard|playai|orpheus|compound|distil|allam|safeguard)/i,
     fallbacks: ['meta-llama/llama-4-scout-17b-16e-instruct', 'openai/gpt-oss-120b', 'llama-3.1-8b-instant'],
   },
-  cerebras: {
-    name: 'Cerebras',
-    kind: 'openai',
-    base: 'https://api.cerebras.ai/v1',
-    keyUrl: 'https://cloud.cerebras.ai',
-    keyHint: 'csk-…',
-    defaultModel: 'llama-3.3-70b',
-    preferred: ['llama-3.3-70b', 'gpt-oss-120b', 'qwen-3-235b', 'llama-4-maverick', 'llama-4-scout', 'qwen-3-32b', 'llama3.1-8b'],
-    exclude: /(embed|vision|audio|guard)/i,
-    fallbacks: ['gpt-oss-120b', 'llama3.1-8b'],
-  },
-  sambanova: {
-    name: 'SambaNova',
-    kind: 'openai',
-    base: 'https://api.sambanova.ai/v1',
-    keyUrl: 'https://cloud.sambanova.ai/apis',
-    keyHint: 'API key',
-    defaultModel: 'Meta-Llama-3.3-70B-Instruct',
-    preferred: ['llama-3.3-70b', 'deepseek-v3', 'llama-4-maverick', 'gpt-oss-120b', 'qwen3-32b', 'llama-3.1-8b'],
-    exclude: /(embed|vision|audio|guard|whisper|e5-)/i,
-    fallbacks: ['DeepSeek-V3-0324', 'Meta-Llama-3.1-8B-Instruct'],
-  },
   openrouter: {
     name: 'OpenRouter (free models)',
     kind: 'openai',
@@ -46,8 +24,8 @@ export const PROVIDERS = {
     keyUrl: 'https://openrouter.ai/keys',
     keyHint: 'sk-or-…',
     defaultModel: 'meta-llama/llama-3.3-70b-instruct:free',
-    preferred: ['llama-3.3-70b', 'deepseek-chat', 'deepseek-v3', 'gpt-oss', 'qwen3', 'mistral-small', 'gemma-3-27b'],
-    exclude: /(vision|image|audio|embed)/i,
+    preferred: ['gemma-4-31b', 'nemotron-3.5-super-vl', 'gemma-4-26b', 'llama-3.3-70b', 'deepseek-chat', 'deepseek-v3', 'gpt-oss', 'qwen3', 'mistral-small', 'gemma-3-27b'],
+    exclude: /(lyria|audio|embed|tts|^openrouter\/)/i,
     freeOnly: true,
     fallbacks: [],
   },
@@ -120,22 +98,32 @@ async function failFrom(res) {
 }
 
 // ---------- OpenAI-compatible (Groq, OpenRouter) ----------
-async function openaiGenerate(p, model, key, prompt, { maxTokens = 900, jsonMode = true, effort = true } = {}) {
+// Models the provider's own catalogue says accept images (filled during model discovery).
+const visionIds = new Set();
+export const isVisionModel = (id) => {
+  const m = String(id);
+  if (/lyria|tts|audio|embed/i.test(m)) return false; // music / speech / embedding models
+  if (visionIds.has(m)) return true;
+  return /llama-4|scout|maverick|vision|-vl\b|vl-|[-_]vl[-_:]|qwen[\w.-]*vl|gemini|gpt-4o|gpt-4\.1|pixtral|gemma-3|gemma-4|llava|glm-4\.\dv|omni/i.test(m);
+};
+
+async function openaiGenerate(p, model, key, prompt, { maxTokens = 900, jsonMode = true, effort = true, image = null } = {}) {
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` };
   if (p === PROVIDERS.openrouter) headers['X-Title'] = 'WebPilot AI';
   const body = {
     model,
     temperature: 0.1,
     max_tokens: maxTokens,
-    messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
+    messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: image ? [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] : prompt }],
   };
   if (/gpt-oss/i.test(model)) { body.max_tokens = maxTokens + 1200; if (effort) body.reasoning_effort = 'low'; } // reasoning tokens count too
   if (jsonMode) body.response_format = { type: 'json_object' };
   const res = await request(`${p.base}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body) });
   if (!res.ok) {
     const err = await failFrom(res);
-    if (err.kind === 'jsonmode' && jsonMode) return openaiGenerate(p, model, key, prompt, { maxTokens, jsonMode: false, effort });
-    if (res.status === 400 && effort && body.reasoning_effort && /reasoning/i.test(err.message)) return openaiGenerate(p, model, key, prompt, { maxTokens, jsonMode, effort: false });
+    if (image && res.status === 400 && /image|vision|multimodal|content must|image_url|not support/i.test(err.message)) return openaiGenerate(p, model, key, prompt, { maxTokens, jsonMode, effort });
+    if (err.kind === 'jsonmode' && jsonMode) return openaiGenerate(p, model, key, prompt, { maxTokens, jsonMode: false, effort, image });
+    if (res.status === 400 && effort && body.reasoning_effort && /reasoning/i.test(err.message)) return openaiGenerate(p, model, key, prompt, { maxTokens, jsonMode, effort: false, image });
     throw err;
   }
   const data = await res.json();
@@ -146,20 +134,22 @@ async function openaiModels(p, key) {
   const res = await fetch(`${p.base}/models`, { headers: { Authorization: `Bearer ${key}` } });
   if (!res.ok) return [];
   const data = await res.json();
-  return (data.data || [])
-    .filter((m) => m.active !== false)
-    .map((m) => m.id)
-    .filter((id) => !p.freeOnly || id.endsWith(':free'));
+  const list = (data.data || []).filter((m) => m.active !== false);
+  for (const m of list) {
+    const mods = [...(m.architecture?.input_modalities || []), ...(m.input_modalities || []), ...(m.modalities || [])].map(String);
+    if (mods.includes('image')) visionIds.add(m.id);
+  }
+  return list.map((m) => m.id).filter((id) => !p.freeOnly || id.endsWith(':free'));
 }
 
 // ---------- Gemini ----------
-async function geminiGenerate(p, model, key, prompt) {
+async function geminiGenerate(p, model, key, prompt, image = null) {
   const res = await request(`${p.base}/models/${encodeURIComponent(model)}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: SYSTEM }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      contents: [{ role: 'user', parts: image ? [{ text: prompt }, { inline_data: { mime_type: 'image/jpeg', data: image.split(',')[1] } }] : [{ text: prompt }] }],
       generationConfig: { temperature: 0.1, responseMimeType: 'application/json' },
     }),
   });
@@ -206,6 +196,18 @@ export function isWeakModel(id) {
   return sizes.length > 0 && Math.max(...sizes) < 20;
 }
 
+/** Image-capable models each configured provider offers (used to warn when WebPilot would be blind). */
+export async function visionModelsFor(settings) {
+  const out = {};
+  for (const id of Object.keys(PROVIDERS)) {
+    const key = (settings.keys?.[id] || '').trim();
+    if (!key) continue;
+    const models = await availableModels(id, key);
+    out[id] = models.filter((m) => isVisionModel(m) && !isWeakModel(m));
+  }
+  return out;
+}
+
 export function resetProviderCache() {
   for (const o of [modelCache, sticky, cooldown]) for (const k of Object.keys(o)) delete o[k];
 }
@@ -217,7 +219,16 @@ export function resetProviderCache() {
 export async function generateJSON(settings, prompt, onNotice, opts = {}) {
   const main = providerOf(settings);
   // The chosen provider first, then any other provider the user saved a key for.
-  const order = [main, ...Object.keys(PROVIDERS).filter((id) => id !== main && (settings.keys?.[id] || '').trim())];
+  let order = [main, ...Object.keys(PROVIDERS).filter((id) => id !== main && (settings.keys?.[id] || '').trim())];
+  // With a screenshot, providers that have image-capable models go first, so the AI can actually see the page.
+  if (opts.image) {
+    const sees = {};
+    for (const id of order) {
+      const models = await availableModels(id, (settings.keys?.[id] || '').trim()).catch(() => []);
+      sees[id] = models.some((m) => isVisionModel(m) && !isWeakModel(m)) || id === 'gemini';
+    }
+    order = [...order.filter((id) => sees[id]), ...order.filter((id) => !sees[id])];
+  }
   let lastErr;
   for (const id of order) {
     try {
@@ -232,7 +243,7 @@ export async function generateJSON(settings, prompt, onNotice, opts = {}) {
   throw lastErr;
 }
 
-async function generateWithProvider(id, settings, prompt, onNotice, { maxTokens = 900, allowWait = true } = {}) {
+async function generateWithProvider(id, settings, prompt, onNotice, { maxTokens = 900, allowWait = true, image = null } = {}) {
   const p = PROVIDERS[id];
   const key = (settings.keys?.[id] || '').trim();
   if (!key) throw new AIError(`No ${p.name} API key set`, 'auth');
@@ -254,15 +265,19 @@ async function generateWithProvider(id, settings, prompt, onNotice, { maxTokens 
     candidates = [soonest];
   }
 
+  // With a screenshot, try models that can see first; others still get the text.
+  if (image) candidates = [...candidates.filter(isVisionModel), ...candidates.filter((m) => !isVisionModel(m))];
+
   const errors = [];
   for (const model of candidates) {
+    const img = image && isVisionModel(model) ? image : null;
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const raw = p.kind === 'gemini'
-          ? await geminiGenerate(p, model, key, prompt)
-          : await openaiGenerate(p, model, key, prompt, { maxTokens });
+          ? await geminiGenerate(p, model, key, prompt, img)
+          : await openaiGenerate(p, model, key, prompt, { maxTokens, image: img });
         sticky[id] = model;
-        return { raw, model };
+        return { raw, model, sawImage: !!img };
       } catch (e) {
         if (e.kind === 'auth') { const err = new Error(`${p.name} rejected the API key: ${e.message}`); err.isAuth = true; throw err; }
         errors.push(`${model}: ${e.message}`);

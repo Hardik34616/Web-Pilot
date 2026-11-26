@@ -10,8 +10,8 @@ import { generateJSON, resetProviderCache } from './providers.js';
 
 export const GENERATED_PASSWORD_KEY = 'generatedPassword';
 
-const TYPES = new Set(['fill', 'select', 'check', 'uncheck', 'click', 'press', 'navigate', 'back', 'scroll', 'wait', 'media', 'download', 'set_code', 'ask_user']);
-const NEEDS_TARGET = new Set(['fill', 'select', 'check', 'uncheck', 'click']);
+const TYPES = new Set(['fill', 'select', 'choose', 'check', 'uncheck', 'click', 'press', 'navigate', 'back', 'scroll', 'wait', 'media', 'download', 'set_code', 'ask_user']);
+const NEEDS_TARGET = new Set(['fill', 'select', 'choose', 'check', 'uncheck', 'click']);
 const PAGE_CHANGING = new Set(['click', 'press', 'navigate', 'back']);
 const clean = (s, n = 160) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
 
@@ -43,17 +43,22 @@ function describeElement(e) {
   if (e.placeholder && e.placeholder !== e.label) parts.push(`ph="${e.placeholder}"`);
   if (e.kind === 'link' && e.href) { const h = shortHref(e.href); if (h) parts.push(`→${h}`); }
   if (e.pdf) parts.push('[PDF]');
+  if (e.combo) parts.push(isFreeText(e) ? '[autocomplete — type with fill]' : '[autocomplete — use choose]');
+  if (e.date) parts.push(`[date field — fill it as ${e.date}]`);
   if (e.required) parts.push('req');
   if (e.invalid) parts.push('INVALID');
   if (e.popup) parts.push('[popup]');
   if (e.offscreen) parts.push('[offscreen]');
+  if (e.covered) parts.push('[COVERED by something on top]');
   return parts.join(' | ');
 }
 
 // Weaker models phrase actions in many ways — accept the common variants instead of dropping them.
 const TYPE_ALIASES = {
   type: 'fill', type_text: 'fill', input: 'fill', enter_text: 'fill', write: 'fill', set: 'fill', set_value: 'fill', search: 'fill',
-  choose: 'select', select_option: 'select', pick: 'select', tick: 'check', untick: 'uncheck',
+  select_option: 'select', pick: 'select',
+  choose_option: 'choose', pick_option: 'choose', select_suggestion: 'choose', pick_suggestion: 'choose', autocomplete: 'choose',
+  select_from_dropdown: 'choose', choose_from_dropdown: 'choose', select_station: 'choose', select_city: 'choose', tick: 'check', untick: 'uncheck',
   tap: 'click', click_element: 'click', press_button: 'click', follow: 'click',
   open: 'navigate', goto: 'navigate', go_to: 'navigate', visit: 'navigate', open_url: 'navigate', navigate_to: 'navigate', go: 'navigate',
   key: 'press', keypress: 'press', press_key: 'press', enter: 'press', submit: 'press',
@@ -124,10 +129,16 @@ export function normalizePlan(raw, snapshot) {
     }
     let type = kind;
     if (el && type === 'fill' && (el.kind === 'select' || el.kind === 'radio-group')) type = 'select';
-    if (el && type === 'select' && !(el.kind === 'select' || el.kind === 'radio-group')) type = 'fill';
-    if (el && (type === 'fill' || type === 'select') && el.kind === 'checkbox') type = 'check';
-    if (el && type === 'fill' && ['button', 'link'].includes(el.kind)) type = 'click';
-    if ((type === 'fill' || type === 'select') && a.value == null && !a.profileKey) { rejected.push(`${type} on ${target} has no value or profileKey`); continue; }
+    if (el && type === 'choose' && (el.kind === 'select' || el.kind === 'radio-group')) type = 'select';
+    if (el && type === 'select' && !(el.kind === 'select' || el.kind === 'radio-group')) type = (el.combo && !isFreeText(el, a)) || el.kind === 'button' ? 'choose' : 'fill';
+    // autocomplete pickers (stations, cities): type AND pick the suggestion. Free text (email recipients,
+    // search boxes, subjects) is typed as-is — there may be no suggestion to pick.
+    if (el && type === 'fill' && el.combo && !el.date && !isFreeText(el, a)) type = 'choose';
+    if (el && type === 'choose' && el.kind !== 'button' && isFreeText(el, a)) type = 'fill';
+    if (el && type === 'choose' && el.date) type = 'fill'; // dates are typed (calendars are slow and fragile)
+    if (el && (type === 'fill' || type === 'select' || type === 'choose') && el.kind === 'checkbox') type = 'check';
+    if (el && type === 'fill' && ['button', 'link'].includes(el.kind)) type = a.value != null ? 'choose' : 'click';
+    if ((type === 'fill' || type === 'select' || type === 'choose') && a.value == null && !a.profileKey) { rejected.push(`${type} on ${target} has no value or profileKey`); continue; }
     actions.push({
       type,
       target: el ? target : undefined,
@@ -162,11 +173,22 @@ export function normalizePlan(raw, snapshot) {
   };
 }
 
+/** Autocomplete fields whose value is free text (emails, recipients, searches), not a pick from a list. */
+export function isFreeText(el, a = {}) {
+  if (!el) return false;
+  const v = String(a.value ?? '');
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) || a.profileKey === 'email') return true;
+  if (['email', 'search', 'url', 'tel'].includes(el.inputType)) return true;
+  // (a bare "To" is NOT enough — a train/flight "To" field is a station picker; Gmail's is "To recipients")
+  return /\b(cc|bcc|recipients?|e-?mail|search|subject|message|query|ask|chat|comment|reply)\b/i.test(`${el.label || ''} ${el.placeholder || ''} ${el.name || ''}`);
+}
+
 function defaultDescription(type, el, a) {
   const label = clean(el?.label, 50);
   switch (type) {
     case 'fill': return a.profileKey === GENERATED_PASSWORD_KEY ? `Enter a new secure password in “${label}”` : `Type ${a.profileKey ? `your ${a.profileKey}` : `“${clean(a.value, 40)}”`} in “${label}”`;
     case 'select': return `Choose ${a.value ? `“${a.value}”` : `your ${a.profileKey}`} in “${label}”`;
+    case 'choose': return `Pick “${a.value || a.profileKey}” in “${label}”`;
     case 'check': return `Tick “${label}”`;
     case 'uncheck': return `Untick “${label}”`;
     case 'click': return `Click “${label}”`;
@@ -198,6 +220,18 @@ function makeRedactor(profile, goal) {
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+/** Short, reliable know-how for sites where the right sequence isn't obvious from the page alone. */
+function siteHints(url) {
+  const u = String(url || '');
+  if (/mail\.google\.com/.test(u)) {
+    return `SITE NOTES (Gmail): to send an email — click "Compose"; in the New Message window fill "To recipients" with the address (fill, then press Tab so it becomes a recipient chip), fill "Subject", fill "Message Body", then click "Send" ONLY if the command asks to send. Sent is confirmed only when NOTIFICATIONS shows "Message sent". Don't use the inbox search box for this.\n`;
+  }
+  if (/irctc\.co\.in/.test(u)) {
+    return 'SITE NOTES (IRCTC): stations use choose; the journey date is typed as dd/mm/yyyy; class/quota are custom dropdowns (choose); after Search, click the class tile on a train, then a date/availability cell, then "Book Now" (login follows: ask the user for password and CAPTCHA).\n';
+  }
+  return '';
+}
 
 // ---------- 1. task plan (once, before acting) ----------
 function buildTaskPlanPrompt({ instruction, snapshot, profile }) {
@@ -247,9 +281,38 @@ export async function makeTaskPlan({ instruction, snapshot, profile, settings, o
 }
 
 // ---------- 2. step prompt (every page) ----------
-const MAX_PROMPT_ELEMENTS = 110;
+const MAX_PROMPT_ELEMENTS = 130;
+const GOAL_STOP = new Set(['the', 'and', 'for', 'with', 'from', 'into', 'this', 'that', 'then', 'please', 'can', 'you', 'your', 'my', 'me', 'open', 'go', 'goto', 'click', 'find', 'page', 'site', 'website', 'want', 'need', 'all', 'it', 'on', 'in', 'to', 'of', 'a', 'an', 'is', 'are', 'be']);
+const wordsOf = (s) => String(s || '').toLowerCase().split(/[^a-z0-9ऀ-ॿ]+/).filter((w) => w.length >= 3 && !GOAL_STOP.has(w));
 
-function buildPrompt({ instruction, snapshot: raw, profile, history, step, taskPlan, current, downloads }) {
+/**
+ * Big pages have hundreds of controls; the model only sees MAX_PROMPT_ELEMENTS. Pick the ones that matter:
+ * popups, form fields and buttons on screen, anything whose text matches the goal / current plan step — and
+ * drop footer / navigation links first. The page's own order is kept for the chosen ones.
+ */
+function pickElements(elements, focusText, max) {
+  if (elements.length <= max) return elements;
+  const want = new Set(wordsOf(focusText));
+  const FIELD = new Set(['text', 'textarea', 'select', 'radio-group', 'checkbox', 'editable', 'media', 'code-editor']);
+  const score = (e, i) => {
+    let s = e.kind === 'code-editor' ? 1000 : 0;
+    if (e.popup) s += 500;
+    const field = FIELD.has(e.kind);
+    s += e.offscreen ? (field ? 150 : 20) : field ? 300 : e.kind === 'button' ? 200 : 120;
+    if (e.region === 'footer') s -= 90; else if (e.region === 'nav' || e.region === 'aside') s -= 30;
+    if (want.size) {
+      const hay = new Set(wordsOf(`${e.label} ${e.placeholder || ''} ${e.name || ''} ${e.kind === 'link' ? e.href || '' : ''}`));
+      let hits = 0;
+      for (const w of want) if (hay.has(w)) hits++;
+      s += Math.min(hits, 3) * 90;
+    }
+    return s - i * 0.05; // ties: what the page lists first
+  };
+  const keep = new Set(elements.map((e, i) => [e, score(e, i)]).sort((a, b) => b[1] - a[1]).slice(0, max).map((x) => x[0]));
+  return elements.filter((e) => keep.has(e));
+}
+
+function buildPrompt({ instruction, snapshot: raw, profile, history, step, taskPlan, current, downloads, hasImage }) {
   const keys = Object.keys(profile);
   const R = makeRedactor(profile, instruction);
   const snapshot = {
@@ -259,13 +322,15 @@ function buildPrompt({ instruction, snapshot: raw, profile, history, step, taskP
   };
   // drop duplicate links (same label + target) to keep the prompt small and fast
   const seen = new Set();
-  const els = raw.elements.filter((e) => {
+  const unique = raw.elements.filter((e) => {
     if (e.kind !== 'link') return true;
     const k = e.label + '|' + e.href;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
-  }).slice(0, MAX_PROMPT_ELEMENTS).map((e) => ({ ...e, label: R(e.label), value: e.value != null ? R(e.value) : e.value }));
+  });
+  const focus = `${instruction} ${taskPlan?.goal || ''} ${taskPlan?.steps?.[current - 1] || ''}`;
+  const els = pickElements(unique, focus, MAX_PROMPT_ELEMENTS).map((e) => ({ ...e, label: R(e.label), value: e.value != null ? R(e.value) : e.value }));
 
   const planText = taskPlan
     ? `TASK PLAN (made before starting — follow it, adapt if the site differs)
@@ -281,6 +346,7 @@ ${planText}
 
 ACTIONS (each may have "description")
 fill{target,value|profileKey} · select{target,value|profileKey} (native dropdown / radio) · check{target} · uncheck{target}
+choose{target,value} — for autocomplete inputs (stations, cities, airports, search suggestions) and custom (non-native) dropdowns: types / opens, waits for the suggestions, clicks the best match and verifies it. Use it instead of fill + click.
 click{target} · press{target?,key:"Enter"|"Escape"|"Tab"|"ArrowDown"} · navigate{url} · back · scroll{direction:"down"|"up"} · wait{seconds}
 media{target?,op:"play"|"pause"} · download{target (link/button) | url} — saves a file (use for PDFs/notifications/documents)
 set_code{target,value} — replace ALL code in a code editor with your complete code (use \n for new lines in JSON)
@@ -289,23 +355,26 @@ ask_user{question} — ONLY for OTP/verification codes, CAPTCHA, logging into an
 RULES
 - Use only IDs from ELEMENTS. Return 1–8 actions; a click/press/navigate/back must be LAST.
 - Batch: fill all visible fields of a form in one step.
-- Close blocking popups/cookie banners/tours first ("Close", "Reject all", "Not now", "×").
+- Free-text autocomplete fields (email recipients, search boxes) are typed with fill — don't wait for a suggestion. Use choose only to pick from a list (stations, cities, custom dropdowns).
+- Close blocking popups/cookie banners/tours first ("Close (×)", "Reject all", "Not now", "Later"); if there is no button, press Escape.
+- Fields marked [autocomplete] need choose (typing alone does not select a station/city). Date fields: fill them with the date in the shown format instead of clicking through the calendar; press Escape afterwards if a calendar stays open.
 - After typing a search, press Enter (or click the search button). Use direct URLs when you know them.
 - To get a file: use download on the link (prefer [PDF] links). If the tab itself is a PDF, use download with the page url.
 - The "id" in every action must be copied exactly from ELEMENTS (e.g. "target":"${els[0]?.id || 'w_1'}").
 - Read HISTORY: never repeat an action that FAILED or had NO VISIBLE CHANGE — try another element, scroll, a menu, site search or a URL. If the page doesn't match the plan, adapt and send "revised_steps".
 - Personal data → profileKey (values hidden from you). New-account passwords → profileKey "${GENERATED_PASSWORD_KEY}" in password and confirm fields. Never type OTPs/card/bank/ID numbers or solve CAPTCHAs (ask_user). Never pay/buy/delete unless asked.
 - Click final submit/sign-up only if the command asks for it.
+- LOGGING IN to an existing account: type the username/email (from the command or a profileKey), then ask_user to enter the password and any CAPTCHA themselves (WebPilot never types real passwords or solves CAPTCHAs), then continue. Elements marked [COVERED] are behind a popup/overlay — close it first. Stop before any payment.
 - CODING PROBLEMS (a code editor is on the page): read the whole problem statement in "text". Keep the editor's language, class name and function signature EXACTLY as in the existing code. Write a complete, correct, efficient solution that handles edge cases — no main() or input reading unless the template has it, no debug prints. set_code it, then click Submit (or Run, then Submit). Read JUDGE: if it is not accepted, work out the bug from the verdict (runtime error, wrong answer on a test, time limit) and set_code a fixed version. Done only when the judge shows accepted / all tests passed.
 - status "achieved" ONLY when this page (or DOWNLOADS) proves "Done when" — give evidence, no actions. Otherwise "in_progress". "blocked" only if impossible.
 
-PAGE (step ${step})
+${hasImage ? 'SCREENSHOT: if an image is attached, it shows exactly what is on screen now. Coloured boxes with numbers mark elements: number N = the element whose id ends in "_N". Use it to understand the layout, find the right field or button, spot popups, and verify results.\n\n' : ''}PAGE (step ${step})
 url: ${snapshot.url}
 title: ${clean(snapshot.title, 100)}${raw.isPdf ? '\nTHIS TAB IS A PDF FILE — use download{url} with this url to save it.' : ''}
 headings: ${snapshot.headings.join(' / ') || '-'}
-${snapshot.popupText ? `POPUP: ${snapshot.popupText}\n` : ''}${snapshot.errors?.length ? `ERRORS: ${snapshot.errors.join(' | ')}\n` : ''}text: ${clean(snapshot.text, raw.elements.some((e) => e.kind === 'code-editor') ? 3500 : 600)}
+${snapshot.popupText ? `POPUP: ${snapshot.popupText}\n` : ''}${snapshot.errors?.length ? `ERRORS: ${snapshot.errors.join(' | ')}\n` : ''}${raw.notices?.length ? `NOTIFICATIONS: ${raw.notices.map(R).join(' | ')}\n` : ''}${siteHints(raw.url)}text: ${clean(snapshot.text, raw.elements.some((e) => e.kind === 'code-editor') ? 3500 : 600)}
 
-ELEMENTS (id | kind | label | details)${raw.elements.length > els.length ? ` — ${els.length} of ${raw.elements.length}, scroll for more` : ''}
+ELEMENTS (id | kind | label | details)${raw.elements.length > els.length ? ` — the ${els.length} most relevant of ${raw.elements.length}; scroll or search the site if what you need is missing` : ''}
 ${els.map(describeElement).join('\n') || '(none)'}
 
 ${raw.elements.filter((e) => e.kind === 'code-editor').map((e) => `CODE EDITOR ${e.id} (${e.editorType}) — current content:
@@ -323,12 +392,13 @@ Reply ONLY with JSON:
 }
 
 // ---------- AI planner (Groq / OpenRouter / Gemini) ----------
-export async function planWithAI({ instruction, snapshot, profile, history = [], step = 1, taskPlan = null, current = 1, downloads = [], settings, onNotice }) {
-  const prompt = buildPrompt({ instruction, snapshot, profile, history, step, taskPlan, current, downloads });
+export async function planWithAI({ instruction, snapshot, profile, history = [], step = 1, taskPlan = null, current = 1, downloads = [], settings, onNotice, image = null }) {
+  const prompt = buildPrompt({ instruction, snapshot, profile, history, step, taskPlan, current, downloads, hasImage: !!image });
   const coding = snapshot.elements.some((e) => e.kind === 'code-editor');
-  const { raw, model } = await generateJSON(settings, prompt, onNotice, { maxTokens: coding ? 3000 : 900 });
+  const { raw, model, sawImage } = await generateJSON(settings, prompt, onNotice, { maxTokens: coding ? 3000 : 900, image });
   const plan = normalizePlan(raw, snapshot);
   plan.model = model;
+  plan.sawImage = sawImage;
   return plan;
 }
 
@@ -424,8 +494,8 @@ export function fallbackPlan({ instruction, snapshot, tried = new Set() }) {
     if (p) return p;
   }
 
-  // 6. last resort: web search
-  if (terms && !/google\./.test(url)) {
+  // 6. last resort: web search — only from a blank tab / unreadable page, never away from a relevant site
+  if (terms && (!/^https?:/i.test(url) || els.length === 0)) {
     const p = make('gsearch', 'Searching the web for it.', [{ type: 'navigate', url: 'https://www.google.com/search?q=' + encodeURIComponent(terms) }]);
     if (p) return p;
   }

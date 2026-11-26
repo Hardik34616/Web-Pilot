@@ -1,21 +1,39 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
   <title>WebPilot AI</title>
+  <script src="theme-init.js"></script>
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
 <body>
+  <!-- ================= HEADER ================= -->
   <header class="top">
     <div class="brand">
-      <img src="../icons/icon32.png" alt="" width="22" height="22" />
-      <span>WebPilot <b>AI</b></span>
+      <img src="../icons/icon32.png" alt="" width="24" height="24" />
+      <span>WebPilot AI</span>
     </div>
-    <div class="status" id="status" title="Planner">
-      <span class="dot"></span><span id="statusText">Offline matcher</span>
+    <div class="top-actions">
+      <button id="openSettings" class="icon-btn" title="Settings" aria-label="Settings">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+      <button id="closePanel" class="icon-btn" title="Close" aria-label="Close">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </div>
   </header>
+
+  <div class="statusbar">
+    <div id="activity" class="activity" data-kind="idle" role="status" aria-live="polite">
+      <span class="act-dot"></span><span id="activityText">Ready</span>
+    </div>
+    <button id="modelPill" class="pill" title="AI provider and model — change in Settings">
+      <span id="status" class="status"><span class="dot"></span><span id="statusText">Offline matcher</span></span>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+  </div>
 
   <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="agent" role="tab">Agent</button>
@@ -28,47 +46,82 @@
   <section class="panel active" id="tab-agent">
     <div class="log" id="log">
       <div class="welcome" id="welcome">
+        <div class="arc" aria-hidden="true"></div>
         <h2>What should I do on this page?</h2>
         <p>Describe a task in plain English. I'll analyze the page, show you a plan, and act — pausing whenever your approval is needed.</p>
         <div class="chips">
-          <button class="chip">Fill my details, select CSE as my branch, accept the terms and prepare the form for submission</button>
-          <button class="chip">Open YouTube and play the GTA 6 trailer</button>
-          <button class="chip">Create an account on this site using my details</button>
-          <button class="chip">Download the NDA 1 2026 notification</button>
-          <button class="chip">Solve this coding problem and submit it</button>
-          <button class="chip">Open Unstop and search for hackathons in Pune</button>
+          <button class="chip" data-prompt="Fill my details, select CSE as my branch, accept the terms and prepare the form for submission">
+            <span class="chip-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg></span>
+            <span>Fill my details, select CSE as my branch, accept the terms and prepare the form for submission</span>
+          </button>
+          <button class="chip" data-prompt="Open YouTube and play the GTA 6 trailer">
+            <span class="chip-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 5.5v13l10-6.5z"/></svg></span>
+            <span>Open YouTube and play the GTA 6 trailer</span>
+          </button>
+          <button class="chip" data-prompt="Create an account on this site using my details">
+            <span class="chip-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v8M8 12h8"/></svg></span>
+            <span>Create an account on this site using my details</span>
+          </button>
+          <button class="chip" data-prompt="Download the NDA 1 2026 notification">
+            <span class="chip-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14"/></svg></span>
+            <span>Download the NDA 1 2026 notification</span>
+          </button>
+          <button class="chip" data-prompt="Solve this coding problem and submit it">
+            <span class="chip-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 7L3.5 12l5 5M15.5 7l5 5-5 5M13.5 5l-3 14"/></svg></span>
+            <span>Solve this coding problem and submit it</span>
+          </button>
+          <button class="chip" data-prompt="Open Gmail and draft an email to my professor asking for an extension">
+            <span class="chip-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M4 7l8 6 8-6"/></svg></span>
+            <span>Open Gmail and draft an email to my professor asking for an extension</span>
+          </button>
+          <button class="chip" data-prompt="Open Unstop and search for hackathons in Pune">
+            <span class="chip-ic"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg></span>
+            <span>Open Unstop and search for hackathons in Pune</span>
+          </button>
         </div>
       </div>
     </div>
 
     <div class="composer">
       <div class="modes" role="radiogroup" aria-label="Autonomy mode">
-        <label title="Routine actions run automatically. Submit, payment and delete still need your OK.">
-          <input type="radio" name="mode" value="full" /><span>⚡ Full Auto</span>
+        <label title="Routine actions run automatically. Payments and deletions still need your OK.">
+          <input type="radio" name="mode" value="full" />
+          <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/></svg>Full Auto</span>
         </label>
         <label title="Fills fields automatically, pauses before clicks, navigation, terms and sensitive steps.">
-          <input type="radio" name="mode" value="review" /><span>👀 Review</span>
+          <input type="radio" name="mode" value="review" />
+          <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>Review</span>
         </label>
         <label title="Asks for approval before every action.">
-          <input type="radio" name="mode" value="step" /><span>🪜 Step-by-step</span>
+          <input type="radio" name="mode" value="step" />
+          <span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg>Step-by-step</span>
         </label>
       </div>
       <div class="inputwrap">
-        <textarea id="task" rows="2" placeholder="e.g. Fill this registration form, select CSE as my branch and accept the terms"></textarea>
-        <button id="run" class="primary icon" title="Run (Enter)">➤</button>
-        <button id="stop" class="danger icon" title="Stop" hidden>■</button>
+        <textarea id="task" rows="1" placeholder="Describe a task for this page…"></textarea>
+        <button id="run" class="send" title="Run (Enter)" aria-label="Run">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
+        <button id="stop" class="send stop" title="Stop" aria-label="Stop" hidden>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
       </div>
       <div class="composer-foot">
-        <button id="saveWf" class="link">☆ Save as workflow</button>
-        <button id="clearLog" class="link">Clear chat</button>
+        <button id="saveWf" class="link">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3.8l2.5 5.1 5.6.8-4.1 4 1 5.6-5-2.7-5 2.7 1-5.6-4.1-4 5.6-.8z"/></svg>
+          Save as workflow</button>
+        <button id="clearLog" class="link">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>
+          Clear chat</button>
       </div>
     </div>
   </section>
 
   <!-- ================= PROFILE ================= -->
   <section class="panel" id="tab-profile">
-    <div class="card accent">
-      <h3>✨ Import from ChatGPT or Gemini</h3>
+    <div class="card">
+      <div class="label">Import</div>
+      <h3>Import from ChatGPT or Gemini</h3>
       <ol class="steps">
         <li><button id="copyPrompt" class="small">Copy prompt</button> and paste it into ChatGPT or Gemini.</li>
         <li>Paste the assistant's reply below and preview it.</li>
@@ -81,8 +134,8 @@
 
     <div class="card">
       <div class="card-head">
-        <h3>🔐 Profile Vault</h3>
-        <span class="hint">Stored only on this device. 🔒 = ask before using.</span>
+        <div><div class="label">Vault</div><h3>Profile</h3></div>
+        <span class="hint">Stored only on this device. Lock = ask before using.</span>
       </div>
       <form id="profileForm"></form>
       <label class="field">
@@ -100,11 +153,12 @@
   <!-- ================= WORKFLOWS ================= -->
   <section class="panel" id="tab-workflows">
     <div class="card">
-      <h3>⭐ Saved workflows</h3>
+      <div class="label">Saved</div>
+      <h3>Workflows</h3>
       <div id="wfList" class="list"></div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>🕘 Action history</h3><button id="clearHistory" class="link">Clear</button></div>
+      <div class="card-head"><div><div class="label">Log</div><h3>Action history</h3></div><button id="clearHistory" class="link">Clear</button></div>
       <div id="historyList" class="list"></div>
     </div>
   </section>
@@ -112,13 +166,12 @@
   <!-- ================= SETTINGS ================= -->
   <section class="panel" id="tab-settings">
     <div class="card">
-      <h3>🧠 AI planner</h3>
+      <div class="label">Model</div>
+      <h3>AI planner</h3>
       <p class="hint">Add a free API key for full natural-language understanding. Without one, WebPilot uses its built-in offline form matcher.</p>
       <label class="field"><span>AI provider</span>
         <select id="provider">
           <option value="groq">Groq — free, very fast (recommended)</option>
-          <option value="cerebras">Cerebras — free, fastest</option>
-          <option value="sambanova">SambaNova — free, very fast</option>
           <option value="openrouter">OpenRouter — free models</option>
           <option value="gemini">Google Gemini</option>
         </select>
@@ -126,7 +179,7 @@
       <label class="field"><span id="keyLabel">API key</span>
         <input id="apiKey" type="password" placeholder="" autocomplete="off" />
       </label>
-      <p class="hint" style="margin-top:-4px">Get a free key: <a id="keyLink" href="#" target="_blank" rel="noopener"></a></p>
+      <p class="hint key-hint">Get a free key: <a id="keyLink" href="#" target="_blank" rel="noopener"></a></p>
       <label class="field"><span>Model <em>(optional — leave blank for the default)</em></span>
         <input id="model" type="text" placeholder="" />
       </label>
@@ -137,22 +190,40 @@
           <option value="step">Step-by-step</option>
         </select>
       </label>
+      <label class="toggle"><input type="checkbox" id="realInput" />
+        <span><b>Real clicks &amp; typing</b>Uses Chrome's debugger so websites receive genuine mouse and keyboard input. Chrome shows a “started debugging this browser” bar while a task runs.</span></label>
+      <label class="toggle"><input type="checkbox" id="vision" />
+        <span><b>Vision</b>Sends a screenshot of the visible page to the AI each step, so it can see buttons and layout. Screenshots contain whatever is on screen.</span></label>
       <div class="row">
         <button id="saveSettings" class="primary">Save</button>
         <button id="testKey" class="ghost">Test connection</button>
         <span id="settingsSaved" class="saved"></span>
       </div>
       <p id="testResult" class="hint"></p>
-      <p class="hint">If the chosen model is overloaded, WebPilot retries and then switches to another model from the same provider. If every model is busy, it falls back to the offline matcher.</p>
-      <p class="hint"><b>Tip:</b> save free keys for more than one provider (switch the dropdown, paste, Save). If your main provider hits its limit, WebPilot automatically continues with the next one.</p>
+      <p class="hint">If the chosen model is overloaded, WebPilot retries and then switches to another model from the same provider. With keys for more than one provider saved, it continues with the next provider automatically.</p>
     </div>
+
     <div class="card">
-      <h3>🛡️ Privacy &amp; safety</h3>
+      <div class="label">Appearance</div>
+      <h3>Theme</h3>
+      <label class="field"><span>Color theme</span>
+        <select id="theme">
+          <option value="system">System</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
+      <p class="hint">System follows your operating system's light or dark appearance. Saved with Settings.</p>
+    </div>
+
+    <div class="card">
+      <div class="label">Safety</div>
+      <h3>Privacy &amp; safety</h3>
       <ul class="bullets">
         <li>Your profile values are <b>never sent to the AI</b>. The model only sees field names and returns references like <code>profileKey: "email"</code>, which are filled in locally.</li>
         <li>The AI can only request whitelisted actions (fill, select, check, click, navigate) — it never runs code on the page.</li>
-        <li>Passwords, OTPs, card and ID numbers are never filled.</li>
-        <li>Submit, payment and delete buttons always require your approval — even in Full Auto.</li>
+        <li>Passwords, OTPs, CAPTCHAs, card and ID numbers are never filled.</li>
+        <li>Payments and deletions always require your approval — even in Full Auto. Emails are sent only when your task says so.</li>
       </ul>
     </div>
   </section>
